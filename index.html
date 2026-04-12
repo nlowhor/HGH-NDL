@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ER Staff On Shift</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__left">
+      <h1>Emergency Department — On Shift</h1>
+      <div id="clock" class="clock" aria-live="polite"></div>
+    </div>
+    <div class="topbar__right">
+      <label class="picker">
+        <span>View time</span>
+        <input type="datetime-local" id="when" />
+      </label>
+      <button id="now-btn" type="button">Now</button>
+      <button id="refresh-btn" type="button" title="Reload from sources">Refresh data</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="current-section" class="shift-section">
+      <header class="shift-section__head">
+        <h2>Current shift</h2>
+        <div id="current-meta" class="shift-section__meta"></div>
+      </header>
+      <div class="roles">
+        <div class="role-col" data-role="attending">
+          <h3>Attendings</h3>
+          <div class="cards" data-target="current.attending"></div>
+        </div>
+        <div class="role-col" data-role="resident">
+          <h3>Residents</h3>
+          <div class="cards" data-target="current.resident"></div>
+        </div>
+        <div class="role-col" data-role="student">
+          <h3>Medical Students</h3>
+          <div class="cards" data-target="current.student"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="next-section" class="shift-section next">
+      <header class="shift-section__head">
+        <h2>Next shift</h2>
+        <div id="next-meta" class="shift-section__meta"></div>
+      </header>
+      <div class="roles">
+        <div class="role-col" data-role="attending">
+          <h3>Attendings</h3>
+          <div class="cards" data-target="next.attending"></div>
+        </div>
+        <div class="role-col" data-role="resident">
+          <h3>Residents</h3>
+          <div class="cards" data-target="next.resident"></div>
+        </div>
+        <div class="role-col" data-role="student">
+          <h3>Medical Students</h3>
+          <div class="cards" data-target="next.student"></div>
+        </div>
+      </div>
+    </section>
+
+    <footer id="status" class="status"></footer>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
