@@ -5,11 +5,27 @@ import { config } from "./config.js";
 import { loadAllRosters, rosterForShift, groupByRole } from "./data.js";
 import { shiftAt, nextShiftAfter, describeShift } from "./shifts.js";
 
+const DEMO_STORAGE_KEY = "hghNdl.demoMode";
+
+function hasLiveSource() {
+  const s = config.sources;
+  return !!s.sheetCsvUrl || !!s.docPubUrl || (s.websites && s.websites.length > 0);
+}
+
+function initialDemoMode() {
+  const stored = localStorage.getItem(DEMO_STORAGE_KEY);
+  if (stored === "true") return true;
+  if (stored === "false") return false;
+  // Default: demo ON until a live source is configured.
+  return !hasLiveSource();
+}
+
 const state = {
   rows: [],
   diagnostics: [],
   // null => track real time; Date => user picked a time
   selectedWhen: null,
+  demoMode: initialDemoMode(),
   tickTimer: null,
   reloadTimer: null,
 };
@@ -117,7 +133,7 @@ function renderStatus() {
 
 async function reload() {
   try {
-    const { rows, diagnostics } = await loadAllRosters();
+    const { rows, diagnostics } = await loadAllRosters({ demoMode: state.demoMode });
     state.rows = rows;
     state.diagnostics = diagnostics;
   } catch (err) {
@@ -138,6 +154,7 @@ function wire() {
   const input = document.getElementById("when");
   const nowBtn = document.getElementById("now-btn");
   const refreshBtn = document.getElementById("refresh-btn");
+  const demoToggle = document.getElementById("demo-toggle");
 
   input.value = toLocalInputValue(new Date());
   input.addEventListener("change", () => {
@@ -153,6 +170,13 @@ function wire() {
   });
 
   refreshBtn.addEventListener("click", () => { reload(); });
+
+  demoToggle.checked = state.demoMode;
+  demoToggle.addEventListener("change", () => {
+    state.demoMode = demoToggle.checked;
+    localStorage.setItem(DEMO_STORAGE_KEY, String(state.demoMode));
+    reload();
+  });
 
   // Tick: update clock + recompute shift on schedule while in live mode.
   state.tickTimer = setInterval(() => {

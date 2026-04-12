@@ -25,7 +25,13 @@ function dedupe(rows) {
 
 // Returns { rows, diagnostics[] }. Diagnostics describe per-source
 // success/failure so the UI can show a friendly status line.
-export async function loadAllRosters() {
+//
+// Options:
+//   demoMode — if true, load ONLY the sample CSV (ignores live sources).
+//              If false, load configured live sources; fall back to
+//              sample only when no live source is configured AND sample
+//              is available.
+export async function loadAllRosters({ demoMode = false } = {}) {
   const diagnostics = [];
   const buckets = [];
   const src = config.sources;
@@ -40,15 +46,29 @@ export async function loadAllRosters() {
     }
   }
 
+  if (demoMode) {
+    if (src.sampleCsvUrl) {
+      await tryOne("Demo data (sample CSV)", () => fetchSheetRoster(src.sampleCsvUrl));
+    } else {
+      diagnostics.push({ name: "Demo data", ok: false, error: "no sampleCsvUrl configured" });
+    }
+    return { rows: dedupe(buckets.flat()), diagnostics };
+  }
+
+  const hasLiveSource =
+    !!src.sheetCsvUrl || !!src.docPubUrl || (src.websites && src.websites.length > 0);
+
   if (src.sheetCsvUrl) await tryOne("Google Sheet", () => fetchSheetRoster(src.sheetCsvUrl));
   if (src.docPubUrl)   await tryOne("Google Doc",   () => fetchDocRoster(src.docPubUrl));
   for (const site of src.websites || []) {
     await tryOne(`Website: ${site.url}`, () => fetchWebsiteRoster(site));
   }
 
-  const totalLive = buckets.reduce((n, b) => n + b.length, 0);
-  if (totalLive === 0 && src.sampleCsvUrl) {
-    await tryOne("Sample data", () => fetchSheetRoster(src.sampleCsvUrl));
+  // Only fall back to sample when there are NO live sources configured
+  // at all. If a live source is configured but returned zero rows,
+  // show that honestly rather than masking it with demo data.
+  if (!hasLiveSource && src.sampleCsvUrl) {
+    await tryOne("Sample data (no live sources configured)", () => fetchSheetRoster(src.sampleCsvUrl));
   }
 
   const rows = dedupe(buckets.flat());
