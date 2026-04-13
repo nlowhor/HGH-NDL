@@ -40,7 +40,7 @@ export const config = {
   sources: {
     // Google Sheet "Publish to web" CSV URL.
     // File -> Share -> Publish to web -> CSV. Paste the URL here.
-    sheetCsvUrl: null,
+    sheetCsvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vTBuoy-bV5JcFwVy4126ZHoU08NTTjMvStgJ0DbuM1lxdlmEa65rmj9PmkAIlP2SKz8GmLoRAlji7Rd/pub?gid=0&single=true&output=csv",
 
     // Google Doc "Publish to web" URL (the /pub link). Optional.
     // The adapter tries to parse the first <table> in the document.
