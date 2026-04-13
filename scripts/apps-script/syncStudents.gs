@@ -5,12 +5,16 @@
  * grid maintained elsewhere) and writes flat student rows into this
  * spreadsheet's `roster` tab.
  *
+ * Runs under your Google identity, so it can open the clerkship sheet
+ * directly with SpreadsheetApp as long as your account has view access.
+ * No "Publish to web" or CSV export required.
+ *
  * SETUP (do once, in the canonical sheet):
- *   1. In the clerkship spreadsheet, File -> Share -> Publish to web.
- *      Choose the single tab (gid=682919139) and "Comma-separated
- *      values (.csv)". Copy the URL it gives you.
- *   2. Paste that URL into STUDENT_CSV_URL below.
- *   3. Add a tab in THIS spreadsheet named exactly `students` with a
+ *   1. Paste the clerkship spreadsheet ID into STUDENT_SHEET_ID below
+ *      (the long string between /d/ and /edit in the sheet URL).
+ *      Optionally set STUDENT_TAB_NAME to pin a specific tab; leave
+ *      blank to use the first tab.
+ *   2. Add a tab in THIS spreadsheet named exactly `students` with a
  *      header row: key, full_name, title, photo_url
  *      Then one row per student, e.g.:
  *        Harriman, Alex Harriman, MS4, https://...
@@ -19,14 +23,16 @@
  *        Hui, Sam Hui, MS4, https://...
  *      The `key` must match how the name appears in the clerkship
  *      sheet's cells (usually last name; case-insensitive).
- *   4. Extensions -> Apps Script -> paste this file -> Save (disk icon).
+ *   3. Extensions -> Apps Script -> paste this file -> Save (disk icon).
+ *   4. Run `syncStudentsNow` once from the Apps Script editor and
+ *      authorize when prompted.
  *   5. Triggers (clock icon) -> Add Trigger -> function
  *      `syncStudentsNow`, Time-driven, Hour timer, Every hour. Save.
  *   6. Reload the spreadsheet; a "Roster Sync" menu appears. Use
  *      "Pull students now" to run on demand.
  *
  * What it does when it runs:
- *   - Fetches the published clerkship CSV
+ *   - Opens the clerkship spreadsheet via SpreadsheetApp
  *   - Parses week blocks anchored on "WEEK n" cells and date cells
  *   - Maps shift labels (DAY / DAY-BUP / RN DAY / SWING / RN SWING /
  *     NIGHT) to our schema (day / evening / night) with notes for
@@ -36,9 +42,10 @@
  *     the freshly parsed shifts (non-student rows are untouched)
  */
 
-const STUDENT_CSV_URL = ''; // PASTE YOUR PUBLISHED CSV URL HERE
-const LOOKUP_TAB_NAME = 'students';
-const ROSTER_TAB_NAME = 'roster';
+const STUDENT_SHEET_ID = '1NazVQvOHGpl0HVjeW76zGQUBbD1kDR7GX5t1nc8-Eio';
+const STUDENT_TAB_NAME = ''; // optional: exact tab name; blank = first tab
+const LOOKUP_TAB_NAME  = 'students';
+const ROSTER_TAB_NAME  = 'roster';
 
 const SHIFT_MAP = {
   'DAY':       { shift: 'day',     note: '' },
@@ -59,24 +66,26 @@ function onOpen() {
 }
 
 function syncStudentsNow() {
-  const ui = SpreadsheetApp.getUi();
-  if (!STUDENT_CSV_URL) {
-    ui.alert('Set STUDENT_CSV_URL at the top of the script first.');
+  const ui = (function () { try { return SpreadsheetApp.getUi(); } catch (e) { return null; } })();
+  if (!STUDENT_SHEET_ID) {
+    const msg = 'Set STUDENT_SHEET_ID at the top of the script first.';
+    if (ui) ui.alert(msg); else throw new Error(msg);
     return;
   }
-  let csv;
+  let rows;
   try {
-    const res = UrlFetchApp.fetch(STUDENT_CSV_URL, { muteHttpExceptions: true });
-    if (res.getResponseCode() !== 200) {
-      throw new Error('HTTP ' + res.getResponseCode());
-    }
-    csv = res.getContentText();
+    const src = SpreadsheetApp.openById(STUDENT_SHEET_ID);
+    const tab = STUDENT_TAB_NAME
+      ? src.getSheetByName(STUDENT_TAB_NAME)
+      : src.getSheets()[0];
+    if (!tab) throw new Error('Tab not found: ' + STUDENT_TAB_NAME);
+    rows = tab.getDataRange().getValues();
   } catch (err) {
-    ui.alert('Failed to fetch clerkship CSV: ' + err.message +
-      '\nMake sure the source sheet is Published to web as CSV.');
+    const msg = 'Failed to open clerkship sheet: ' + err.message +
+      '\nMake sure this account has at least view access to the sheet.';
+    if (ui) ui.alert(msg); else throw err;
     return;
   }
-  const rows = Utilities.parseCsv(csv);
   const entries = parseClerkshipSchedule(rows);
   const n = writeStudentsToRoster(entries);
   SpreadsheetApp.getActiveSpreadsheet().toast(
@@ -94,7 +103,7 @@ function parseClerkshipSchedule(rows) {
   outer: for (const r of rows) {
     for (let i = 0; i < r.length; i++) {
       if (String(r[i]).trim().toLowerCase() === 'rotation start date' && r[i + 1]) {
-        const dt = parseDateCell(String(r[i + 1]), rotationYear);
+        const dt = parseDateCell(r[i + 1], rotationYear);
         if (dt) { rotationYear = dt.getFullYear(); break outer; }
       }
     }
@@ -150,13 +159,17 @@ function parseClerkshipSchedule(rows) {
 function findDateCols(row, startCol, rotationYear) {
   const out = [];
   for (let c = startCol; c < row.length; c++) {
-    const dt = parseDateCell(String(row[c]), rotationYear);
+    const dt = parseDateCell(row[c], rotationYear);
     if (dt) out.push({ col: c, date: dt });
   }
   return out;
 }
 
 function parseDateCell(s, year) {
+  // getValues() returns real Date objects for date-formatted cells.
+  if (s instanceof Date && !isNaN(s.getTime())) {
+    return new Date(s.getFullYear(), s.getMonth(), s.getDate());
+  }
   s = String(s).trim();
   if (!s) return null;
 
