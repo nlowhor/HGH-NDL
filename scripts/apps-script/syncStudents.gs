@@ -1,0 +1,265 @@
+/**
+ * Student schedule sync for HGH ED Roster (canonical sheet).
+ * ----------------------------------------------------------
+ * Reads the Highland Hospital EM Clerkship Schedule (a 2D rotation
+ * grid maintained elsewhere) and writes flat student rows into this
+ * spreadsheet's `roster` tab.
+ *
+ * SETUP (do once, in the canonical sheet):
+ *   1. In the clerkship spreadsheet, File -> Share -> Publish to web.
+ *      Choose the single tab (gid=682919139) and "Comma-separated
+ *      values (.csv)". Copy the URL it gives you.
+ *   2. Paste that URL into STUDENT_CSV_URL below.
+ *   3. Add a tab in THIS spreadsheet named exactly `students` with a
+ *      header row: key, full_name, title, photo_url
+ *      Then one row per student, e.g.:
+ *        Harriman, Alex Harriman, MS4, https://...
+ *        Rios-Fetchko, Jamie Rios-Fetchko, MS4,
+ *        Guzman, Pat Guzman, MS3,
+ *        Hui, Sam Hui, MS4, https://...
+ *      The `key` must match how the name appears in the clerkship
+ *      sheet's cells (usually last name; case-insensitive).
+ *   4. Extensions -> Apps Script -> paste this file -> Save (disk icon).
+ *   5. Triggers (clock icon) -> Add Trigger -> function
+ *      `syncStudentsNow`, Time-driven, Hour timer, Every hour. Save.
+ *   6. Reload the spreadsheet; a "Roster Sync" menu appears. Use
+ *      "Pull students now" to run on demand.
+ *
+ * What it does when it runs:
+ *   - Fetches the published clerkship CSV
+ *   - Parses week blocks anchored on "WEEK n" cells and date cells
+ *   - Maps shift labels (DAY / DAY-BUP / RN DAY / SWING / RN SWING /
+ *     NIGHT) to our schema (day / evening / night) with notes for
+ *     BUP/RN rotations
+ *   - Looks up each student's display info in the `students` tab
+ *   - Removes existing `role=student` rows from `roster` and appends
+ *     the freshly parsed shifts (non-student rows are untouched)
+ */
+
+const STUDENT_CSV_URL = ''; // PASTE YOUR PUBLISHED CSV URL HERE
+const LOOKUP_TAB_NAME = 'students';
+const ROSTER_TAB_NAME = 'roster';
+
+const SHIFT_MAP = {
+  'DAY':       { shift: 'day',     note: '' },
+  'DAY-BUP':   { shift: 'day',     note: 'BUP' },
+  'RN DAY':    { shift: 'day',     note: 'Nursing rotation' },
+  'SWING':     { shift: 'evening', note: '' },
+  'RN SWING':  { shift: 'evening', note: 'Nursing rotation' },
+  'NIGHT':     { shift: 'night',   note: '' },
+};
+
+const MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Roster Sync')
+    .addItem('Pull students now', 'syncStudentsNow')
+    .addToUi();
+}
+
+function syncStudentsNow() {
+  const ui = SpreadsheetApp.getUi();
+  if (!STUDENT_CSV_URL) {
+    ui.alert('Set STUDENT_CSV_URL at the top of the script first.');
+    return;
+  }
+  let csv;
+  try {
+    const res = UrlFetchApp.fetch(STUDENT_CSV_URL, { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) {
+      throw new Error('HTTP ' + res.getResponseCode());
+    }
+    csv = res.getContentText();
+  } catch (err) {
+    ui.alert('Failed to fetch clerkship CSV: ' + err.message +
+      '\nMake sure the source sheet is Published to web as CSV.');
+    return;
+  }
+  const rows = Utilities.parseCsv(csv);
+  const entries = parseClerkshipSchedule(rows);
+  const n = writeStudentsToRoster(entries);
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    'Synced ' + n + ' student shifts from clerkship sheet.',
+    'Roster Sync', 5);
+}
+
+// ---------------------------------------------------------------
+// Parser for the 2D rotation grid.
+// ---------------------------------------------------------------
+
+function parseClerkshipSchedule(rows) {
+  // Infer year from "Rotation Start Date" cell. Fallback: current year.
+  let rotationYear = new Date().getFullYear();
+  outer: for (const r of rows) {
+    for (let i = 0; i < r.length; i++) {
+      if (String(r[i]).trim().toLowerCase() === 'rotation start date' && r[i + 1]) {
+        const dt = parseDateCell(String(r[i + 1]), rotationYear);
+        if (dt) { rotationYear = dt.getFullYear(); break outer; }
+      }
+    }
+  }
+
+  // Locate week blocks.
+  const weekStarts = [];
+  for (let i = 0; i < rows.length; i++) {
+    for (let j = 0; j < rows[i].length; j++) {
+      if (/^\s*WEEK\s+\d+\s*$/i.test(String(rows[i][j]))) {
+        weekStarts.push({ rowIndex: i, colIndex: j });
+        break;
+      }
+    }
+  }
+
+  const entries = [];
+  for (let w = 0; w < weekStarts.length; w++) {
+    const ws = weekStarts[w];
+    const endRow = (w + 1 < weekStarts.length) ? weekStarts[w + 1].rowIndex : rows.length;
+
+    // Dates usually appear in the same row as "WEEK n", to the right.
+    // If not, scan the next 2 rows too.
+    let dateCols = findDateCols(rows[ws.rowIndex], ws.colIndex + 1, rotationYear);
+    for (let probe = 1; probe <= 2 && dateCols.length === 0 && ws.rowIndex + probe < endRow; probe++) {
+      dateCols = findDateCols(rows[ws.rowIndex + probe], ws.colIndex + 1, rotationYear);
+    }
+    if (dateCols.length === 0) continue;
+
+    // In each subsequent row, read (shift_label, name) pairs at the
+    // discovered date columns. Label is in col C, name in col C+1.
+    for (let r = ws.rowIndex + 1; r < endRow; r++) {
+      const row = rows[r] || [];
+      for (const dc of dateCols) {
+        const label = String(row[dc.col] || '').trim().toUpperCase();
+        const name  = String(row[dc.col + 1] || '').trim();
+        if (!label || !name) continue;
+        const mapped = SHIFT_MAP[label];
+        if (!mapped) continue; // Skip "EM RESIDENCY CONFERENCE" etc.
+        entries.push({
+          date:   formatDate(dc.date),
+          shift:  mapped.shift,
+          role:   'student',
+          name:   name,
+          note:   mapped.note,
+        });
+      }
+    }
+  }
+  return entries;
+}
+
+function findDateCols(row, startCol, rotationYear) {
+  const out = [];
+  for (let c = startCol; c < row.length; c++) {
+    const dt = parseDateCell(String(row[c]), rotationYear);
+    if (dt) out.push({ col: c, date: dt });
+  }
+  return out;
+}
+
+function parseDateCell(s, year) {
+  s = String(s).trim();
+  if (!s) return null;
+
+  // "3/30/26", "03/30/2026"
+  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) {
+    let y = parseInt(m[3], 10);
+    if (y < 100) y += 2000;
+    return new Date(y, parseInt(m[1], 10) - 1, parseInt(m[2], 10));
+  }
+  // "Mar-30", "Apr-1"
+  m = s.match(/^([A-Za-z]{3})[-\s](\d{1,2})$/);
+  if (m) {
+    const mo = MONTHS.indexOf(m[1].toLowerCase().slice(0, 3));
+    if (mo >= 0) return new Date(year, mo, parseInt(m[2], 10));
+  }
+  // "2026-04-12"
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
+  return null;
+}
+
+function formatDate(d) {
+  const pad = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+// ---------------------------------------------------------------
+// Writing to the canonical roster tab.
+// ---------------------------------------------------------------
+
+function writeStudentsToRoster(entries) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const roster = ss.getSheetByName(ROSTER_TAB_NAME);
+  if (!roster) throw new Error("Missing '" + ROSTER_TAB_NAME + "' tab in this spreadsheet.");
+
+  const data = roster.getDataRange().getValues();
+  if (!data.length) throw new Error("'" + ROSTER_TAB_NAME + "' tab is empty (needs a header row).");
+  const headers = data[0].map(function (h) { return String(h).trim().toLowerCase(); });
+
+  const col = function (name) {
+    const i = headers.indexOf(name);
+    if (i < 0) throw new Error("roster tab is missing column: " + name);
+    return i;
+  };
+  const roleCol  = col('role');
+  const dateCol  = col('date');
+  const shiftCol = col('shift');
+  const nameCol  = col('name');
+  const titleCol = headers.indexOf('title');
+  const photoCol = headers.indexOf('photo_url');
+  const notesCol = headers.indexOf('notes');
+
+  // Delete existing student rows (bottom-up so indices don't shift).
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][roleCol]).trim().toLowerCase() === 'student') {
+      roster.deleteRow(i + 1); // 1-based
+    }
+  }
+
+  const lookup = loadStudentsLookup(ss);
+
+  if (!entries.length) return 0;
+
+  const toAppend = entries.map(function (e) {
+    const key = String(e.name || '').trim().toLowerCase();
+    const info = lookup[key] || { full_name: e.name, title: '', photo_url: '' };
+    const row = new Array(headers.length).fill('');
+    row[dateCol]  = e.date;
+    row[shiftCol] = e.shift;
+    row[roleCol]  = 'student';
+    row[nameCol]  = info.full_name || e.name;
+    if (titleCol >= 0) row[titleCol] = info.title || '';
+    if (photoCol >= 0) row[photoCol] = info.photo_url || '';
+    if (notesCol >= 0) row[notesCol] = e.note || '';
+    return row;
+  });
+
+  const lastRow = roster.getLastRow();
+  roster.getRange(lastRow + 1, 1, toAppend.length, headers.length).setValues(toAppend);
+  return toAppend.length;
+}
+
+function loadStudentsLookup(ss) {
+  const sheet = ss.getSheetByName(LOOKUP_TAB_NAME);
+  if (!sheet) return {};
+  const data = sheet.getDataRange().getValues();
+  if (data.length < 2) return {};
+  const headers = data[0].map(function (h) { return String(h).trim().toLowerCase(); });
+  const keyCol   = headers.indexOf('key');
+  const nameCol  = headers.indexOf('full_name');
+  const titleCol = headers.indexOf('title');
+  const photoCol = headers.indexOf('photo_url');
+  if (keyCol < 0) return {};
+  const map = {};
+  for (let i = 1; i < data.length; i++) {
+    const key = String(data[i][keyCol] || '').trim().toLowerCase();
+    if (!key) continue;
+    map[key] = {
+      full_name: nameCol  >= 0 ? String(data[i][nameCol]  || '').trim() : '',
+      title:     titleCol >= 0 ? String(data[i][titleCol] || '').trim() : '',
+      photo_url: photoCol >= 0 ? String(data[i][photoCol] || '').trim() : '',
+    };
+  }
+  return map;
+}
