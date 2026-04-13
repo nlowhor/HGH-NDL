@@ -14,18 +14,15 @@
  *      (the long string between /d/ and /edit in the sheet URL).
  *      Optionally set STUDENT_TAB_NAME to pin a specific tab; leave
  *      blank to use the first tab.
- *   2. Add a tab in THIS spreadsheet named exactly `students` with a
- *      header row: key, full_name, title, photo_url
- *      Then one row per student, e.g.:
- *        Harriman, Alex Harriman, MS4, https://...
- *        Rios-Fetchko, Jamie Rios-Fetchko, MS4,
- *        Guzman, Pat Guzman, MS3,
- *        Hui, Sam Hui, MS4, https://...
- *      The `key` must match how the name appears in the clerkship
- *      sheet's cells (usually last name; case-insensitive).
- *   3. Extensions -> Apps Script -> paste this file -> Save (disk icon).
- *   4. Run `syncStudentsNow` once from the Apps Script editor and
- *      authorize when prompted.
+ *   2. Extensions -> Apps Script -> paste this file -> Save (disk icon).
+ *   3. Run `syncStudentsNow` once from the Apps Script editor and
+ *      authorize when prompted. This auto-creates the `students`
+ *      lookup tab (headers: key, full_name, title, photo_url) and
+ *      seeds it with one row per distinct name found in the grid.
+ *   4. Fill in full_name / title / photo_url for each student in the
+ *      `students` tab. You never edit the `key` column -- that's what
+ *      matches back to the clerkship grid. Leave full_name blank to
+ *      fall back to the raw key; leave photo_url blank to get initials.
  *   5. Triggers (clock icon) -> Add Trigger -> function
  *      `syncStudentsNow`, Time-driven, Hour timer, Every hour. Save.
  *   6. Reload the spreadsheet; a "Roster Sync" menu appears. Use
@@ -37,6 +34,8 @@
  *   - Maps shift labels (DAY / DAY-BUP / RN DAY / SWING / RN SWING /
  *     NIGHT) to our schema (day / evening / night) with notes for
  *     BUP/RN rotations
+ *   - Appends a row to the `students` tab for any new keys (never
+ *     touches existing rows)
  *   - Looks up each student's display info in the `students` tab
  *   - Removes existing `role=student` rows from `roster` and appends
  *     the freshly parsed shifts (non-student rows are untouched)
@@ -87,9 +86,11 @@ function syncStudentsNow() {
     return;
   }
   const entries = parseClerkshipSchedule(rows);
+  const added = ensureStudentsLookupRows(entries);
   const n = writeStudentsToRoster(entries);
+  const extra = added ? ' (+' + added + ' new lookup rows)' : '';
   SpreadsheetApp.getActiveSpreadsheet().toast(
-    'Synced ' + n + ' student shifts from clerkship sheet.',
+    'Synced ' + n + ' student shifts from clerkship sheet.' + extra,
     'Roster Sync', 5);
 }
 
@@ -251,6 +252,57 @@ function writeStudentsToRoster(entries) {
   const lastRow = roster.getLastRow();
   roster.getRange(lastRow + 1, 1, toAppend.length, headers.length).setValues(toAppend);
   return toAppend.length;
+}
+
+// Ensure the `students` lookup tab exists and has a row for every
+// distinct key seen in this sync. Existing rows are never modified;
+// only new keys get appended with blank full_name / title / photo_url
+// for a human to fill in later. Returns the number of rows appended.
+function ensureStudentsLookupRows(entries) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(LOOKUP_TAB_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(LOOKUP_TAB_NAME);
+    sheet.getRange(1, 1, 1, 4).setValues([['key', 'full_name', 'title', 'photo_url']]);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+  }
+  const data = sheet.getDataRange().getValues();
+  const headers = (data[0] || []).map(function (h) { return String(h).trim().toLowerCase(); });
+  let keyCol = headers.indexOf('key');
+  if (keyCol < 0) {
+    // Tab exists but has no `key` header; refuse to touch it to avoid
+    // clobbering whatever the user has there.
+    return 0;
+  }
+
+  const existing = {};
+  for (let i = 1; i < data.length; i++) {
+    const k = String(data[i][keyCol] || '').trim().toLowerCase();
+    if (k) existing[k] = true;
+  }
+
+  // Unique keys, preserving first-seen order and original casing.
+  const seen = {};
+  const newKeys = [];
+  for (const e of entries) {
+    const raw = String(e.name || '').trim();
+    const k = raw.toLowerCase();
+    if (!k || seen[k] || existing[k]) continue;
+    seen[k] = true;
+    newKeys.push(raw);
+  }
+  if (!newKeys.length) return 0;
+
+  const width = Math.max(headers.length, 4);
+  const rowsToAppend = newKeys.map(function (raw) {
+    const row = new Array(width).fill('');
+    row[keyCol] = raw;
+    return row;
+  });
+  const startRow = sheet.getLastRow() + 1;
+  sheet.getRange(startRow, 1, rowsToAppend.length, width).setValues(rowsToAppend);
+  return rowsToAppend.length;
 }
 
 function loadStudentsLookup(ss) {
