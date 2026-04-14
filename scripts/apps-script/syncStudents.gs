@@ -162,15 +162,22 @@ function parseClerkshipSchedule(rows, onWeek) {
     if (dateCols.length === 0) continue;
 
     // In each subsequent row, read (shift_label, name) pairs at the
-    // discovered date columns. Label is in col C, name in col C+1.
+    // discovered date columns. Label is normally at dc.col with name
+    // at dc.col+1, but some days (notably Monday in the HGH layout)
+    // shift one column to the right -- so we check both offsets.
     for (let r = ws.rowIndex + 1; r < endRow; r++) {
       const row = rows[r] || [];
       for (const dc of dateCols) {
-        const label = String(row[dc.col] || '').trim().toUpperCase();
-        const name  = String(row[dc.col + 1] || '').trim();
-        if (!label || !name) continue;
+        let labelCol = dc.col;
+        let label = String(row[labelCol] || '').trim().toUpperCase();
+        if (!SHIFT_MAP[label]) {
+          labelCol = dc.col + 1;
+          label = String(row[labelCol] || '').trim().toUpperCase();
+        }
         const mapped = SHIFT_MAP[label];
-        if (!mapped) continue; // Skip "EM RESIDENCY CONFERENCE" etc.
+        if (!mapped) continue; // Not a recognized shift label.
+        const name = String(row[labelCol + 1] || '').trim();
+        if (!name) continue;
         entries.push({
           date:   formatDate(dc.date),
           shift:  mapped.shift,
