@@ -12,7 +12,7 @@ export const config = {
   // treated as crossing midnight.
   shifts: [
     { name: "day",     label: "Day",     start: 7,  end: 15 },
-    { name: "evening", label: "Evening", start: 15, end: 23 },
+    { name: "evening", label: "Swing",   start: 15, end: 23 },
     { name: "night",   label: "Night",   start: 23, end: 7  }, // wraps midnight
   ],
 

@@ -61,7 +61,33 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Roster Sync')
     .addItem('Pull students now', 'syncStudentsNow')
+    .addItem('Show parse report', 'showParseReport')
     .addToUi();
+}
+
+// Diagnostic: parse the clerkship sheet and show what was found per
+// week (date columns, per-day entry counts). Use this when a day is
+// missing from the roster to see what the parser actually saw.
+function showParseReport() {
+  const src = SpreadsheetApp.openById(STUDENT_SHEET_ID);
+  const tab = STUDENT_TAB_NAME ? src.getSheetByName(STUDENT_TAB_NAME) : src.getSheets()[0];
+  const rows = tab.getDataRange().getValues();
+  const report = [];
+  const entries = parseClerkshipSchedule(rows, function (weekInfo) {
+    const dates = weekInfo.dateCols.map(function (dc) {
+      return formatDate(dc.date) + '@col' + dc.col;
+    }).join(', ');
+    report.push('WEEK at row ' + (weekInfo.rowIndex + 1) + ': ' + (dates || '(no dates found)'));
+  });
+  const byDate = {};
+  for (const e of entries) byDate[e.date] = (byDate[e.date] || 0) + 1;
+  const dateLines = Object.keys(byDate).sort().map(function (d) {
+    return '  ' + d + ': ' + byDate[d] + ' entries';
+  }).join('\n');
+  const text =
+    'Parsed ' + entries.length + ' total entries.\n\n' +
+    report.join('\n') + '\n\nPer-date counts:\n' + dateLines;
+  SpreadsheetApp.getUi().alert('Parse report', text, SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
 function syncStudentsNow() {
@@ -98,7 +124,7 @@ function syncStudentsNow() {
 // Parser for the 2D rotation grid.
 // ---------------------------------------------------------------
 
-function parseClerkshipSchedule(rows) {
+function parseClerkshipSchedule(rows, onWeek) {
   // Infer year from "Rotation Start Date" cell. Fallback: current year.
   let rotationYear = new Date().getFullYear();
   outer: for (const r of rows) {
@@ -132,6 +158,7 @@ function parseClerkshipSchedule(rows) {
     for (let probe = 1; probe <= 2 && dateCols.length === 0 && ws.rowIndex + probe < endRow; probe++) {
       dateCols = findDateCols(rows[ws.rowIndex + probe], ws.colIndex + 1, rotationYear);
     }
+    if (typeof onWeek === 'function') onWeek({ rowIndex: ws.rowIndex, dateCols: dateCols });
     if (dateCols.length === 0) continue;
 
     // In each subsequent row, read (shift_label, name) pairs at the
