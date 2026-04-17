@@ -28,7 +28,7 @@ var MEDREZ_ICS_FEEDS = [
     url: 'https://www.medrez.net/view.php?a=9s733y77k&s=br4v200xm&from_date=2025-06-23&to_date=2026-06-21&theme=ical&salt=0.7418443263884366',
   },
   {
-    label: 'R2-R4',
+    label: 'resident',  // fallback if R-level not found in event summary
     url: 'https://www.medrez.net/view.php?a=9s733y77k&s=le9u5c4n6&from_date=2025-07-28&to_date=2026-07-26&theme=ical&salt=0.15048210449681',
   },
 ];
@@ -191,8 +191,8 @@ function parseIcsToEntries(ics, feedLabel) {
     // Determine shift from SUMMARY, DESCRIPTION, or time.
     var shift = detectShift_(summary + ' ' + desc, dtstart);
 
-    // Title (PGY level) from feed label.
-    var title = feedLabel || '';
+    // PGY level from the event itself; fall back to feed label.
+    var title = extractPgyLevel_(summary) || feedLabel || '';
 
     entries.push({
       date:      date,
@@ -229,12 +229,30 @@ function icsField_(block, field) {
 
 function extractResidentName_(summary) {
   if (!summary) return null;
-  // Strip common suffixes like " - Day Shift", " (Day)", " - Night" etc.
+  // Strip PGY level tokens so they don't end up in the name.
   var name = summary
+    .replace(/\bR[1-4]\b/gi, '')
+    .replace(/\bPGY[-\s]?[1-4]\b/gi, '')
+    // Strip shift suffixes: " - Day Shift", " (Night)", etc.
     .replace(/\s*[-–—]\s*(day|swing|evening|night|noc|overnight).*$/i, '')
     .replace(/\s*\((day|swing|evening|night|noc|overnight)[^)]*\)\s*$/i, '')
+    // Clean up leftover punctuation/whitespace.
+    .replace(/[-–—,]\s*$/, '')
+    .replace(/\s{2,}/g, ' ')
     .trim();
   return name || null;
+}
+
+// Extract R1/R2/R3/R4 label from the event SUMMARY.
+// Returns null if not found (caller falls back to feed label).
+function extractPgyLevel_(summary) {
+  if (!summary) return null;
+  var m = summary.match(/\b(R[1-4])\b/i)
+       || summary.match(/\bPGY[-\s]?([1-4])\b/i);
+  if (!m) return null;
+  // Normalise to "R1" / "R2" etc.
+  var raw = m[1].toUpperCase();
+  return raw.length === 1 ? 'R' + raw : raw; // handle PGY match group
 }
 
 function parseIcsDate_(dtstart) {
