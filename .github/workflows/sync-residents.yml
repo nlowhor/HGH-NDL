@@ -26,15 +26,6 @@ jobs:
         working-directory: scripts/sync-residents
         run: npm install
 
-      - name: Install Chrome dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libgbm-dev libasound2 libatk1.0-0 libatk-bridge2.0-0 \
-            libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
-            libxdamage1 libxfixes3 libxrandr2 libpango-1.0-0 \
-            libcairo2 libnss3 libnspr4
-
       - name: Run resident sync
         working-directory: scripts/sync-residents
         env:
