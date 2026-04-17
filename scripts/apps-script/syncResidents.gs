@@ -14,8 +14,8 @@
  */
 
 var MEDREZ_RESIDENTS = [
-  { name: 'Test Resident', title: 'R1', url: 'http://www.medrez.net/view.php?f=2b1yqpgbj971' },
-  // Add more: { name: 'Last, First', title: 'R2', url: 'http://www.medrez.net/view.php?f=...' },
+  { name: 'Alberto Romo Valenzuela', title: 'R2', url: 'http://www.medrez.net/view.php?f=2b1yqpgbj971' },
+  // Add more: { name: 'Last, First', title: 'R1', url: 'http://www.medrez.net/view.php?f=...' },
 ];
 
 var ROSTER_TAB = 'roster';
@@ -178,15 +178,19 @@ function parseIcsDate_(dtstart) {
 }
 
 function detectShift_(text, dtstart) {
-  for (var i = 0; i < SHIFT_PATTERNS.length; i++) {
-    if (SHIFT_PATTERNS[i].pattern.test(text)) return SHIFT_PATTERNS[i].shift;
-  }
+  // Prefer DTSTART time — it's unambiguous. Some summaries like
+  // "Backup (Day/E Swing/Swing)" contain mixed keywords that confuse
+  // text matching, but the start hour is always definitive.
   var m = dtstart.match(/T(\d{2})/);
   if (m) {
     var h = parseInt(m[1], 10);
     if (h >= 23 || h < 7)  return 'night';
     if (h >= 15)            return 'evening';
     return 'day';
+  }
+  // No time component (all-day event) — fall back to text patterns.
+  for (var i = 0; i < SHIFT_PATTERNS.length; i++) {
+    if (SHIFT_PATTERNS[i].pattern.test(text)) return SHIFT_PATTERNS[i].shift;
   }
   return 'day';
 }
