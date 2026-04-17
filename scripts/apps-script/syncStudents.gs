@@ -64,7 +64,7 @@ function onOpen() {
     .addItem('Pull residents now',      'syncResidentsNow')
     .addSeparator()
     .addItem('Show student parse report', 'showParseReport')
-    .addItem('Diagnose Medrez fetch',     'diagnoseMedrezLogin')
+    .addItem('Diagnose Medrez fetch',     'diagnoseMedrezIcs')
     .addToUi();
 }
 

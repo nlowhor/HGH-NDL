@@ -1,317 +1,194 @@
 /**
  * Resident schedule sync for HGH ED Roster (canonical sheet).
  * ----------------------------------------------------------
- * Logs into the Medrez shared schedule viewer (password-protected)
- * and scrapes the HTML schedule table to extract resident shifts.
+ * Fetches per-resident calendar subscription ICS feeds from Medrez
+ * and writes shifts into the `roster` tab as role=resident.
  *
  * SETUP:
- *   1. Paste this file into the canonical sheet's Apps Script project.
- *   2. Run `diagnoseMedrezLogin` first — it shows what the page
- *      returns before and after the password POST so we can confirm
- *      the login works and inspect the schedule HTML structure.
- *   3. Once confirmed, run `syncResidentsNow` and set an hourly trigger.
+ *   1. In Medrez, get each resident's calendar subscription link
+ *      (the permanent URL, e.g. http://www.medrez.net/view.php?f=...).
+ *   2. Add one entry per resident to MEDREZ_RESIDENTS below.
+ *   3. Run `diagnoseMedrezIcs` to confirm the feed works.
+ *   4. Run `syncResidentsNow` to populate the roster.
+ *   5. Add an hourly trigger for `syncResidentsNow`.
  */
 
-var MEDREZ_VIEW_URL  = 'https://www.medrez.net/view.php?a=9s733y77k';
-var MEDREZ_PASSWORD  = 'HGH5150';
-var ROSTER_TAB       = 'roster';
+var MEDREZ_RESIDENTS = [
+  { name: 'Test Resident', title: 'R1', url: 'http://www.medrez.net/view.php?f=2b1yqpgbj971' },
+  // Add more: { name: 'Last, First', title: 'R2', url: 'http://www.medrez.net/view.php?f=...' },
+];
 
-var ICS_SHIFT_PATTERNS = [
+var ROSTER_TAB = 'roster';
+
+var SHIFT_PATTERNS = [
   { pattern: /night|noc|overnight/i, shift: 'night'   },
   { pattern: /swing|eve|pm/i,        shift: 'evening' },
   { pattern: /day|am|morning/i,      shift: 'day'     },
 ];
 
 // ---------------------------------------------------------------
+// Diagnostic: test the first resident's subscription feed.
+// ---------------------------------------------------------------
+
+function diagnoseMedrezIcs() {
+  var ui = SpreadsheetApp.getUi();
+  if (!MEDREZ_RESIDENTS.length) {
+    ui.alert('Add at least one entry to MEDREZ_RESIDENTS first.');
+    return;
+  }
+  var r = MEDREZ_RESIDENTS[0];
+  Logger.log('Fetching: ' + r.url);
+  var resp = UrlFetchApp.fetch(r.url, { muteHttpExceptions: true, followRedirects: true });
+  var code = resp.getResponseCode();
+  var body = resp.getContentText();
+  var len = body.length;
+  Logger.log('HTTP ' + code + ', ' + len + ' bytes');
+  Logger.log('First 2000 chars:\n' + body.slice(0, 2000));
+
+  var isIcs = body.indexOf('BEGIN:VCALENDAR') >= 0;
+  if (!isIcs) {
+    ui.alert('HTTP ' + code + ', ' + len + ' bytes — NOT ICS.\n\nStarts with:\n' +
+      body.slice(0, 400));
+    return;
+  }
+
+  var events = extractVevents_(body);
+  // Show first 5 events.
+  var sample = events.slice(0, 5).map(function(e, i) {
+    return 'Event ' + (i+1) + ':\n' +
+      '  SUMMARY: '  + (icsField_(e, 'SUMMARY')  || '?') + '\n' +
+      '  DTSTART: '  + (icsField_(e, 'DTSTART')  || '?') + '\n' +
+      '  DTEND: '    + (icsField_(e, 'DTEND')    || '?') + '\n' +
+      '  DESCRIPTION: ' + (icsField_(e, 'DESCRIPTION') || '?');
+  }).join('\n');
+  Logger.log('Events: ' + events.length + '\n' + sample);
+
+  // Unique summaries.
+  var sums = {};
+  for (var i = 0; i < events.length; i++) {
+    var s = icsField_(events[i], 'SUMMARY') || '(none)';
+    sums[s] = (sums[s] || 0) + 1;
+  }
+  var sumList = Object.keys(sums).sort().map(function(k) {
+    return '  ' + k + ' (' + sums[k] + ')';
+  }).join('\n');
+  Logger.log('Unique SUMMARYs:\n' + sumList);
+
+  ui.alert(
+    r.name + ': HTTP ' + code + ', ' + events.length + ' events.\n\n' +
+    sample.slice(0, 800) + '\n\nUnique SUMMARYs:\n' + sumList.slice(0, 600)
+  );
+}
+
+// ---------------------------------------------------------------
 // Main sync.
 // ---------------------------------------------------------------
 
 function syncResidentsNow() {
-  var html = loginAndFetch_();
-  if (!html) return;
-  var entries = parseMedrezSchedule_(html);
-  if (!entries.length) {
+  if (!MEDREZ_RESIDENTS.length) {
     SpreadsheetApp.getActiveSpreadsheet().toast(
-      'No resident shifts found — run "Diagnose Medrez login" to check HTML structure.',
-      'Roster Sync', 8);
+      'No residents configured.', 'Roster Sync', 5);
     return;
   }
-  var n = writeRoleToRoster_(entries, 'resident');
-  SpreadsheetApp.getActiveSpreadsheet().toast(
-    'Synced ' + n + ' resident shifts from Medrez.', 'Roster Sync', 5);
+  var allEntries = [];
+  var errors = [];
+  for (var i = 0; i < MEDREZ_RESIDENTS.length; i++) {
+    var r = MEDREZ_RESIDENTS[i];
+    try {
+      var ics = fetchIcs_(r.url);
+      var entries = parseResidentIcs_(ics, r.name, r.title);
+      allEntries = allEntries.concat(entries);
+    } catch (err) {
+      errors.push(r.name + ': ' + err.message);
+    }
+  }
+  var n = writeRoleToRoster_(allEntries, 'resident');
+  var msg = 'Synced ' + n + ' resident shifts (' + MEDREZ_RESIDENTS.length + ' residents).';
+  if (errors.length) msg += '\nErrors: ' + errors.join('; ');
+  SpreadsheetApp.getActiveSpreadsheet().toast(msg, 'Roster Sync', 8);
 }
 
 // ---------------------------------------------------------------
-// Diagnostic: show login flow and raw HTML structure.
+// ICS fetch.
 // ---------------------------------------------------------------
 
-function diagnoseMedrezLogin() {
-  var ui = SpreadsheetApp.getUi();
-
-  // Step 1: GET the page.
-  Logger.log('Step 1: GET ' + MEDREZ_VIEW_URL);
-  var resp1 = UrlFetchApp.fetch(MEDREZ_VIEW_URL, {
-    muteHttpExceptions: true, followRedirects: true,
-  });
-  var code1 = resp1.getResponseCode();
-  var body1 = resp1.getContentText();
-  Logger.log('GET response: HTTP ' + code1 + ' (' + body1.length + ' bytes)\n' +
-    body1.slice(0, 2000));
-
-  var hasPasswordForm = body1.toLowerCase().indexOf('type="password"') >= 0
-                     || body1.toLowerCase().indexOf("type='password'") >= 0;
-
-  if (!hasPasswordForm) {
-    // Already past login — may be showing the schedule.
-    ui.alert(
-      'Step 1: HTTP ' + code1 + ', NO password form detected.\n\n' +
-      'First 800 chars:\n' + body1.slice(0, 800)
-    );
-    analyzeScheduleHtml_(body1);
-    return;
-  }
-
-  // Show the form so we can confirm field names.
-  var formSnippet = extractFormHtml_(body1);
-  Logger.log('Password form HTML:\n' + formSnippet);
-
-  // Step 2: POST the password.
-  var field = detectPasswordField_(body1);
-  Logger.log('Using password field name: ' + field);
-  var cookie1 = extractCookies_(resp1);
-
-  var payload = {};
-  payload[field] = MEDREZ_PASSWORD;
-
-  Logger.log('Step 2: POST with field "' + field + '"');
-  var resp2 = UrlFetchApp.fetch(MEDREZ_VIEW_URL, {
-    method: 'post',
-    payload: payload,
-    headers: cookie1 ? { Cookie: cookie1 } : {},
-    muteHttpExceptions: true,
-    followRedirects: true,
-  });
-  var code2 = resp2.getResponseCode();
-  var body2 = resp2.getContentText();
-  Logger.log('POST response: HTTP ' + code2 + ' (' + body2.length + ' bytes)\n' +
-    body2.slice(0, 3000));
-
-  var stillLoginPage = body2.toLowerCase().indexOf('type="password"') >= 0;
-  if (stillLoginPage) {
-    ui.alert(
-      'Login FAILED (still seeing password form after POST).\n\n' +
-      'Form HTML found:\n' + formSnippet.slice(0, 600) + '\n\n' +
-      'Check Execution Log for full details.'
-    );
-    return;
-  }
-
-  ui.alert(
-    'Login OK! HTTP ' + code2 + ', ' + body2.length + ' bytes.\n\n' +
-    'First 800 chars of schedule page:\n' + body2.slice(0, 800) + '\n\n' +
-    'Check Execution Log for full HTML and parse analysis.'
-  );
-  analyzeScheduleHtml_(body2);
-}
-
-// Log a structural breakdown of the schedule page.
-function analyzeScheduleHtml_(html) {
-  Logger.log('Total HTML length: ' + html.length);
-
-  // Strip all <script> tags and their content to see the actual markup.
-  var stripped = html.replace(/<script[\s\S]*?<\/script>/gi, '');
-  Logger.log('After stripping scripts: ' + stripped.length + ' chars');
-
-  // Strip <style> tags too.
-  stripped = stripped.replace(/<style[\s\S]*?<\/style>/gi, '');
-  Logger.log('After stripping styles: ' + stripped.length + ' chars');
-
-  // Log the stripped HTML in 800-char chunks (up to 4).
-  var chunkSize = 800;
-  for (var i = 0; i < Math.min(4, Math.ceil(stripped.length / chunkSize)); i++) {
-    Logger.log('=== Stripped chunk ' + (i+1) + ' ===\n' +
-      stripped.slice(i * chunkSize, (i+1) * chunkSize));
-  }
-
-  // Count structural elements.
-  var divCount   = (stripped.match(/<div/gi) || []).length;
-  var tableCount = (stripped.match(/<table/gi) || []).length;
-  Logger.log('div count: ' + divCount + ', table count: ' + tableCount);
-
-  // Look for date patterns in the stripped HTML.
-  var dateMatches = stripped.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g) || [];
-  Logger.log('Date-like strings: ' + dateMatches.length +
-    (dateMatches.length ? ' — ' + dateMatches.slice(0,10).join(', ') : ''));
-}
-
-// ---------------------------------------------------------------
-// Login flow.
-// ---------------------------------------------------------------
-
-function loginAndFetch_() {
-  var ui = SpreadsheetApp.getUi();
-
-  var resp = UrlFetchApp.fetch(MEDREZ_VIEW_URL, {
-    muteHttpExceptions: true, followRedirects: true,
-  });
-  var body = resp.getContentText();
+function fetchIcs_(url) {
+  var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
   var code = resp.getResponseCode();
-
-  if (code !== 200) {
-    ui.alert('Medrez GET failed: HTTP ' + code);
-    return null;
-  }
-
-  // Already past login.
-  var hasForm = body.toLowerCase().indexOf('type="password"') >= 0;
-  if (!hasForm) return body;
-
-  // POST password.
-  var field = detectPasswordField_(body);
-  var cookie = extractCookies_(resp);
-  var payload = {};
-  payload[field] = MEDREZ_PASSWORD;
-
-  resp = UrlFetchApp.fetch(MEDREZ_VIEW_URL, {
-    method: 'post',
-    payload: payload,
-    headers: cookie ? { Cookie: cookie } : {},
-    muteHttpExceptions: true,
-    followRedirects: true,
-  });
-  body = resp.getContentText();
-  code = resp.getResponseCode();
-
-  if (code !== 200) {
-    ui.alert('Medrez POST failed: HTTP ' + code);
-    return null;
-  }
-  if (body.toLowerCase().indexOf('type="password"') >= 0) {
-    ui.alert('Medrez password rejected. Run "Diagnose Medrez login" for details.');
-    return null;
+  var body = resp.getContentText();
+  if (code !== 200) throw new Error('HTTP ' + code);
+  if (body.indexOf('BEGIN:VCALENDAR') < 0) {
+    throw new Error('Not ICS. Starts with: ' + body.slice(0, 80));
   }
   return body;
 }
 
 // ---------------------------------------------------------------
-// Schedule HTML parser.
-// Adjust after running diagnoseMedrezLogin() to confirm layout.
+// ICS parser.
 // ---------------------------------------------------------------
 
-function parseMedrezSchedule_(html) {
+function parseResidentIcs_(ics, residentName, title) {
+  var events = extractVevents_(ics);
   var entries = [];
-  var tables = html.match(/<table[\s\S]*?<\/table>/gi) || [];
-  Logger.log('parseMedrezSchedule_: ' + tables.length + ' tables in page.');
+  for (var i = 0; i < events.length; i++) {
+    var ev = events[i];
+    var summary = icsField_(ev, 'SUMMARY') || '';
+    var dtstart = icsField_(ev, 'DTSTART') || '';
+    var desc    = icsField_(ev, 'DESCRIPTION') || '';
 
-  for (var t = 0; t < tables.length; t++) {
-    var rows = tables[t].match(/<tr[\s\S]*?<\/tr>/gi) || [];
-    if (rows.length < 2) continue;
+    if (/there was a problem/i.test(summary)) continue;
 
-    // Look for a header row with recognisable dates.
-    var headerCells = extractCells_(rows[0]);
-    var dateCols = [];
-    for (var c = 0; c < headerCells.length; c++) {
-      var d = parseMedrezDate_(headerCells[c]);
-      if (d) dateCols.push({ col: c, date: d });
-    }
-    if (dateCols.length < 2) continue;
+    var date = parseIcsDate_(dtstart);
+    if (!date) continue;
 
-    Logger.log('Schedule table found (table ' + (t+1) + '). Dates: ' +
-      dateCols.map(function(dc){ return dc.date; }).join(', '));
+    var shift = detectShift_(summary + ' ' + desc, dtstart);
 
-    var currentShift = 'day';
-    for (var r = 1; r < rows.length; r++) {
-      var cells = extractCells_(rows[r]);
-      if (!cells.length) continue;
-
-      var maybeShift = detectShiftFromLabel_(cells[0]);
-      if (maybeShift) { currentShift = maybeShift; continue; }
-
-      var residentName = cells[0].trim();
-      if (!residentName) continue;
-
-      for (var dc = 0; dc < dateCols.length; dc++) {
-        var cell = (cells[dateCols[dc].col] || '').trim();
-        if (!cell || cell === '-' || cell === '' || cell === '0') continue;
-        // Cell might be 'x', a checkmark, a shift label, or the name again.
-        var name = (cell.toLowerCase() === 'x' || cell === '✓' || cell === '•')
-          ? residentName : cell;
-        entries.push({
-          date:      dateCols[dc].date,
-          shift:     currentShift,
-          name:      name,
-          title:     '',
-          photo_url: '',
-          notes:     '',
-        });
-      }
-    }
+    entries.push({
+      date:      date,
+      shift:     shift,
+      name:      residentName,
+      title:     title || '',
+      photo_url: '',
+      notes:     summary || '',
+    });
   }
-  Logger.log('parseMedrezSchedule_: ' + entries.length + ' entries.');
   return entries;
 }
 
-// ---------------------------------------------------------------
-// Helpers.
-// ---------------------------------------------------------------
-
-function detectPasswordField_(html) {
-  var m = html.match(/<input[^>]+type=["']password["'][^>]*name=["']([^"']+)["']/i)
-       || html.match(/<input[^>]+name=["']([^"']+)["'][^>]*type=["']password["']/i);
-  return m ? m[1] : 'password';
+function extractVevents_(ics) {
+  var results = [];
+  var re = /BEGIN:VEVENT([\s\S]*?)END:VEVENT/g;
+  var m;
+  while ((m = re.exec(ics)) !== null) results.push(m[1]);
+  return results;
 }
 
-function extractCookies_(resp) {
-  try {
-    var h = resp.getAllHeaders();
-    return (h['Set-Cookie'] || h['set-cookie'] || '');
-  } catch (e) { return ''; }
+function icsField_(block, field) {
+  var re = new RegExp('(?:^|\\n)' + field + '[^:]*:([^\\n]*(?:\\n[ \\t][^\\n]*)*)');
+  var m = block.match(re);
+  if (!m) return null;
+  return m[1].replace(/\r/g, '').replace(/\n[ \t]/g, '').trim();
 }
 
-function extractFormHtml_(html) {
-  var m = html.match(/<form[\s\S]*?<\/form>/i);
-  return m ? m[0] : '(no <form> found)';
+function parseIcsDate_(dtstart) {
+  if (!dtstart) return null;
+  var m = dtstart.match(/(\d{4})(\d{2})(\d{2})/);
+  if (!m) return null;
+  return m[1] + '-' + m[2] + '-' + m[3];
 }
 
-function extractCells_(rowHtml) {
-  var cells = rowHtml.match(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi) || [];
-  return cells.map(function(c) {
-    return c.replace(/<[^>]+>/g, '')
-             .replace(/&amp;/g,'&').replace(/&lt;/g,'<')
-             .replace(/&gt;/g,'>').replace(/&nbsp;/g,' ')
-             .replace(/\s+/g,' ').trim();
-  });
-}
-
-function parseMedrezDate_(s) {
-  if (!s) return null;
-  var m = s.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+function detectShift_(text, dtstart) {
+  for (var i = 0; i < SHIFT_PATTERNS.length; i++) {
+    if (SHIFT_PATTERNS[i].pattern.test(text)) return SHIFT_PATTERNS[i].shift;
+  }
+  var m = dtstart.match(/T(\d{2})/);
   if (m) {
-    var y = m[3] ? parseInt(m[3]) : new Date().getFullYear();
-    if (y < 100) y += 2000;
-    return formatIso_(new Date(y, parseInt(m[1])-1, parseInt(m[2])));
+    var h = parseInt(m[1], 10);
+    if (h >= 23 || h < 7)  return 'night';
+    if (h >= 15)            return 'evening';
+    return 'day';
   }
-  m = s.match(/([A-Za-z]{3})[.\s-]+(\d{1,2})/);
-  if (m) {
-    var months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-    var mo = months.indexOf(m[1].toLowerCase());
-    if (mo >= 0) return formatIso_(new Date(new Date().getFullYear(), mo, parseInt(m[2])));
-  }
-  m = s.match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (m) return m[0];
-  return null;
-}
-
-function detectShiftFromLabel_(s) {
-  for (var i = 0; i < ICS_SHIFT_PATTERNS.length; i++) {
-    if (ICS_SHIFT_PATTERNS[i].pattern.test(s)) return ICS_SHIFT_PATTERNS[i].shift;
-  }
-  return null;
-}
-
-function formatIso_(d) {
-  var pad = function(n) { return String(n).padStart(2,'0'); };
-  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
+  return 'day';
 }
 
 // ---------------------------------------------------------------
@@ -354,6 +231,6 @@ function writeRoleToRoster_(entries, role) {
     if (notesCol >= 0) row[notesCol] = e.notes     || '';
     return row;
   });
-  roster.getRange(roster.getLastRow()+1, 1, rows.length, headers.length).setValues(rows);
+  roster.getRange(roster.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
   return rows.length;
 }
