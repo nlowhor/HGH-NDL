@@ -102,20 +102,35 @@ function nameFromDescription(desc) {
 // ── Puppeteer helpers ─────────────────────────────────────────────
 
 // Extract all f= tokens visible on the current page.
+// Checks <a href>, <input value>, and raw page text to catch all formats.
 async function extractFTokens(page) {
   return page.evaluate(() => {
     const results = {};
+    const add = (token, context) => {
+      const t = token.toLowerCase();
+      if (!results[t]) results[t] = context;
+    };
+
+    // <a href="...f=TOKEN..."> (http and webcal)
     for (const a of document.querySelectorAll('a[href*="f="]')) {
       const m = a.href.match(/[?&]f=([a-z0-9]+)/i);
       if (!m) continue;
-      const token = m[1].toLowerCase();
-      if (results[token]) continue;
       const row  = a.closest('tr');
       const cell = a.closest('td') || a.closest('li') || a.parentElement;
-      const nearbyText = (row?.textContent || cell?.textContent || '').trim()
-        .replace(/\s+/g, ' ');
-      results[token] = nearbyText;
+      add(m[1], (row?.textContent || cell?.textContent || '').trim().replace(/\s+/g, ' '));
     }
+
+    // <input value="...f=TOKEN...">
+    for (const inp of document.querySelectorAll('input[value*="f="]')) {
+      const m = inp.value.match(/[?&]f=([a-z0-9]+)/i);
+      if (m) add(m[1], '');
+    }
+
+    // Any f= pattern anywhere in page text (copy-to-clipboard URLs etc.)
+    const re = /[?&]f=([a-z0-9]{4,})/gi;
+    let m;
+    while ((m = re.exec(document.body.innerText)) !== null) add(m[1], '');
+
     return results;
   });
 }
@@ -165,34 +180,40 @@ async function scrapeResidentTokens() {
     if (Object.keys(found).length === 0) {
       console.log('No f= links on landing page — checking resident sub-pages…');
 
-      // Collect every link that looks like a resident profile page.
-      // Medrez resident links typically carry a numeric or alphanumeric
-      // id parameter (r=, p=, id=, u=) but NOT the group token (a=).
-      const residentLinks = await page.evaluate((baseUrl) => {
-        const seen = new Set();
+      // Collect every view.php link that differs from the landing page URL.
+      // Resident links typically look like view.php?a=GROUP&p=RESIDENT_ID —
+      // previously we incorrectly skipped all links containing a=.
+      const landingUrl = await page.url();
+      const residentLinks = await page.evaluate((landing) => {
+        const seen = new Set([landing]);
         const links = [];
         for (const a of document.querySelectorAll('a[href]')) {
           const href = a.href;
-          // Must be same host, contain view.php, and have a param other than a=
           if (!href.includes('medrez.net')) continue;
           if (!href.includes('view.php')) continue;
-          if (/[?&]a=/.test(href)) continue; // skip the group viewer itself
           if (seen.has(href)) continue;
           seen.add(href);
           links.push({ href, text: a.textContent.trim().replace(/\s+/g, ' ') });
         }
         return links;
-      }, MEDREZ_URL);
+      }, landingUrl);
 
       console.log(`Found ${residentLinks.length} candidate resident link(s).`);
 
-      for (const { href, text } of residentLinks) {
+      for (let i = 0; i < residentLinks.length; i++) {
+        const { href, text } = residentLinks[i];
         try {
-          console.log(`  Visiting: ${href}`);
+          console.log(`  [${i + 1}/${residentLinks.length}] Visiting: ${href}`);
           await page.goto(href, { waitUntil: 'networkidle2', timeout: 15_000 });
           const subFound = await extractFTokens(page);
+          console.log(`    → f= tokens found: ${Object.keys(subFound).length}`);
           for (const [token, nearby] of Object.entries(subFound)) {
             if (!found[token]) found[token] = text || nearby;
+          }
+          // Save HTML of first sub-page for debugging.
+          if (i === 0) {
+            fs.writeFileSync('medrez-resident-debug.html', await page.content());
+            console.log('    → first sub-page HTML saved to medrez-resident-debug.html');
           }
         } catch (err) {
           console.warn(`  Could not load ${href}: ${err.message}`);

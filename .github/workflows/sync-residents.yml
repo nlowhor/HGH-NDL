@@ -41,5 +41,6 @@ jobs:
           path: |
             scripts/sync-residents/medrez-debug.png
             scripts/sync-residents/medrez-debug.html
+            scripts/sync-residents/medrez-resident-debug.html
           if-no-files-found: ignore
           retention-days: 7
