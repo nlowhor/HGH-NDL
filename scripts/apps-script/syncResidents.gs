@@ -75,19 +75,26 @@ function diagnoseMedrez() {
     return;
   }
   var feed = MEDREZ_ICS_FEEDS[0];
-  var ics;
-  try {
-    ics = fetchMedrezIcs_(feed.url);
-  } catch (err) {
-    SpreadsheetApp.getUi().alert('Fetch failed for ' + feed.label + ':\n' + err.message);
+
+  // Raw fetch — show exactly what the server returns before any parsing.
+  var resp = UrlFetchApp.fetch(feed.url, { muteHttpExceptions: true, followRedirects: true });
+  var code = resp.getResponseCode();
+  var body = resp.getContentText();
+  Logger.log('HTTP ' + code + '\n\n' + body.slice(0, 3000));
+
+  var isIcs = body.trim().indexOf('BEGIN:VCALENDAR') === 0;
+  var snippet = body.slice(0, 600);
+
+  if (!isIcs) {
+    SpreadsheetApp.getUi().alert(
+      'Medrez returned HTTP ' + code + ' but NOT an ICS file.\n\n' +
+      'Response starts with:\n' + snippet + '\n\n' +
+      'Full response in Execution Log.'
+    );
     return;
   }
 
-  var events = extractVevents_(ics);
-  var sample = events.slice(0, 5).map(function (e, i) {
-    return '--- Event ' + (i + 1) + ' ---\n' + e;
-  }).join('\n\n');
-
+  var events = extractVevents_(body);
   var summaries = {};
   for (var i = 0; i < events.length; i++) {
     var s = icsField_(events[i], 'SUMMARY');
@@ -97,16 +104,14 @@ function diagnoseMedrez() {
     return '  ' + k + ' (' + summaries[k] + ')';
   }).join('\n');
 
-  var report =
-    feed.label + ': ' + ics.length + ' bytes, ' + events.length + ' VEVENTs.\n\n' +
-    'First 5 events:\n' + sample + '\n\n' +
-    'Unique SUMMARYs:\n' + summaryList;
+  var sample = events.slice(0, 3).map(function (e, i) {
+    return '--- Event ' + (i + 1) + ' ---\n' + e;
+  }).join('\n\n');
+  Logger.log('=== Sample events ===\n' + sample);
 
-  Logger.log(report);
   SpreadsheetApp.getUi().alert(
     'Medrez ICS diagnosis',
-    feed.label + ': ' + events.length + ' events found.\n' +
-    'Check Execution Log for full details.\n\n' +
+    feed.label + ': HTTP ' + code + ', ' + events.length + ' events.\n\n' +
     'Unique SUMMARYs:\n' + summaryList.slice(0, 1500),
     SpreadsheetApp.getUi().ButtonSet.OK
   );
