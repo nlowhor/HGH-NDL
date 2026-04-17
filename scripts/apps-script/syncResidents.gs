@@ -116,17 +116,40 @@ function diagnoseMedrezLogin() {
 
 // Log a structural breakdown of the schedule page.
 function analyzeScheduleHtml_(html) {
-  var tables = html.match(/<table[\s\S]*?<\/table>/gi) || [];
-  Logger.log('Tables found: ' + tables.length);
-  for (var t = 0; t < tables.length; t++) {
-    var rows = tables[t].match(/<tr[\s\S]*?<\/tr>/gi) || [];
-    Logger.log('Table ' + (t+1) + ': ' + rows.length + ' rows');
-    // Show first 3 rows of each table.
-    for (var r = 0; r < Math.min(3, rows.length); r++) {
-      var cells = extractCells_(rows[r]);
-      Logger.log('  Row ' + (r+1) + ': ' + JSON.stringify(cells));
-    }
-  }
+  // Strip <head> — we care about the body.
+  var bodyStart = html.toLowerCase().indexOf('<body');
+  var body = bodyStart >= 0 ? html.slice(bodyStart) : html;
+
+  Logger.log('Body length: ' + body.length);
+
+  // Log 4 evenly-spaced 600-char chunks so we see the whole page.
+  var chunkSize = 600;
+  var positions = [0, Math.floor(body.length * 0.25),
+                   Math.floor(body.length * 0.5), Math.floor(body.length * 0.75)];
+  positions.forEach(function(p, i) {
+    Logger.log('=== Body chunk ' + (i+1) + ' (offset ' + p + ') ===\n' +
+      body.slice(p, p + chunkSize));
+  });
+
+  // Search for embedded JSON data objects (schedule apps often bootstrap data this way).
+  var jsonMatches = body.match(/(?:window\.\w+|var \w+)\s*=\s*(\{[\s\S]{20,500}?\});/g) || [];
+  Logger.log('Embedded JS assignments found: ' + jsonMatches.length);
+  jsonMatches.slice(0, 5).forEach(function(m, i) {
+    Logger.log('JS assignment ' + (i+1) + ': ' + m.slice(0, 300));
+  });
+
+  // Look for date patterns anywhere in the body.
+  var dateMatches = body.match(/\b(?:\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2})\b/g) || [];
+  Logger.log('Date-like strings found: ' + dateMatches.length +
+    (dateMatches.length ? (' — sample: ' + dateMatches.slice(0,10).join(', ')) : ''));
+
+  // Any <div> or <table> elements.
+  var divCount   = (body.match(/<div/gi) || []).length;
+  var tableCount = (body.match(/<table/gi) || []).length;
+  Logger.log('div count: ' + divCount + ', table count: ' + tableCount);
+
+  // Log the last 1000 chars (often where lazy-loaded content appears).
+  Logger.log('=== Body tail (last 1000 chars) ===\n' + body.slice(-1000));
 }
 
 // ---------------------------------------------------------------
