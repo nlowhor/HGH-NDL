@@ -20,6 +20,7 @@
 const puppeteer  = require('puppeteer');
 const { google } = require('googleapis');
 const https      = require('https');
+const fs         = require('fs');
 
 const MEDREZ_URL      = 'https://www.medrez.net/view.php?a=9s733y77k';
 const MEDREZ_PASSWORD = 'HGH5150';
@@ -98,6 +99,27 @@ function nameFromDescription(desc) {
   return m ? m[1].trim() : null;
 }
 
+// ── Puppeteer helpers ─────────────────────────────────────────────
+
+// Extract all f= tokens visible on the current page.
+async function extractFTokens(page) {
+  return page.evaluate(() => {
+    const results = {};
+    for (const a of document.querySelectorAll('a[href*="f="]')) {
+      const m = a.href.match(/[?&]f=([a-z0-9]+)/i);
+      if (!m) continue;
+      const token = m[1].toLowerCase();
+      if (results[token]) continue;
+      const row  = a.closest('tr');
+      const cell = a.closest('td') || a.closest('li') || a.parentElement;
+      const nearbyText = (row?.textContent || cell?.textContent || '').trim()
+        .replace(/\s+/g, ' ');
+      results[token] = nearbyText;
+    }
+    return results;
+  });
+}
+
 // ── Puppeteer: get all f= tokens from Medrez DOM ──────────────────
 async function scrapeResidentTokens() {
   console.log('Launching Puppeteer…');
@@ -124,38 +146,62 @@ async function scrapeResidentTokens() {
     }
 
     console.log('Waiting for schedule to render…');
-    // Wait up to 15 s for any link containing f= to appear.
     await page.waitForFunction(
-      () => document.querySelector('a[href*="f="]') !== null,
+      () => document.querySelector('a[href]') !== null,
       { timeout: 15_000 }
-    ).catch(() => console.warn('No f= links appeared after 15 s — will try anyway.'));
+    ).catch(() => console.warn('Page may not have fully rendered.'));
 
-    // Save a screenshot as a debug artifact.
+    // Save debug artifacts.
     await page.screenshot({ path: 'medrez-debug.png', fullPage: true });
     console.log('Screenshot saved to medrez-debug.png');
+    fs.writeFileSync('medrez-debug.html', await page.content());
+    console.log('HTML saved to medrez-debug.html');
 
-    // Extract every unique f= token and any adjacent name text.
-    const found = await page.evaluate(() => {
-      const results = {};
-      for (const a of document.querySelectorAll('a[href*="f="]')) {
-        const m = a.href.match(/[?&]f=([a-z0-9]+)/i);
-        if (!m) continue;
-        const token = m[1].toLowerCase();
-        if (results[token]) continue;
+    // Step 1: try to find f= tokens directly on the landing page.
+    let found = await extractFTokens(page);
+    console.log(`f= links on landing page: ${Object.keys(found).length}`);
 
-        // Try to grab a nearby name: look at parent row, then parent element.
-        const row  = a.closest('tr');
-        const cell = a.closest('td') || a.closest('li') || a.parentElement;
-        const nearbyText = (row?.textContent || cell?.textContent || '').trim()
-          .replace(/\s+/g, ' ');
+    // Step 2: if none found, navigate to each resident sub-page.
+    if (Object.keys(found).length === 0) {
+      console.log('No f= links on landing page — checking resident sub-pages…');
 
-        results[token] = nearbyText;
+      // Collect every link that looks like a resident profile page.
+      // Medrez resident links typically carry a numeric or alphanumeric
+      // id parameter (r=, p=, id=, u=) but NOT the group token (a=).
+      const residentLinks = await page.evaluate((baseUrl) => {
+        const seen = new Set();
+        const links = [];
+        for (const a of document.querySelectorAll('a[href]')) {
+          const href = a.href;
+          // Must be same host, contain view.php, and have a param other than a=
+          if (!href.includes('medrez.net')) continue;
+          if (!href.includes('view.php')) continue;
+          if (/[?&]a=/.test(href)) continue; // skip the group viewer itself
+          if (seen.has(href)) continue;
+          seen.add(href);
+          links.push({ href, text: a.textContent.trim().replace(/\s+/g, ' ') });
+        }
+        return links;
+      }, MEDREZ_URL);
+
+      console.log(`Found ${residentLinks.length} candidate resident link(s).`);
+
+      for (const { href, text } of residentLinks) {
+        try {
+          console.log(`  Visiting: ${href}`);
+          await page.goto(href, { waitUntil: 'networkidle2', timeout: 15_000 });
+          const subFound = await extractFTokens(page);
+          for (const [token, nearby] of Object.entries(subFound)) {
+            if (!found[token]) found[token] = text || nearby;
+          }
+        } catch (err) {
+          console.warn(`  Could not load ${href}: ${err.message}`);
+        }
       }
-      return results;
-    });
+    }
 
     const tokens = Object.entries(found); // [[token, nearbyText], ...]
-    console.log(`Found ${tokens.length} unique resident link(s).`);
+    console.log(`Found ${tokens.length} unique resident token(s) total.`);
     return tokens;
 
   } finally {

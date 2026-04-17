@@ -33,11 +33,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: node index.js
 
-      - name: Upload debug screenshot
+      - name: Upload debug artifacts
         if: always() # Upload even if sync failed, for debugging.
         uses: actions/upload-artifact@v4
         with:
-          name: medrez-debug-screenshot
-          path: scripts/sync-residents/medrez-debug.png
+          name: medrez-debug
+          path: |
+            scripts/sync-residents/medrez-debug.png
+            scripts/sync-residents/medrez-debug.html
           if-no-files-found: ignore
           retention-days: 7
