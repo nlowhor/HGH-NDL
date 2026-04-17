@@ -65,6 +65,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Show student parse report', 'showParseReport')
     .addItem('Diagnose Medrez fetch',     'diagnoseMedrezIcs')
+    .addItem('Discover resident links',   'discoverResidentLinks')
     .addToUi();
 }
 

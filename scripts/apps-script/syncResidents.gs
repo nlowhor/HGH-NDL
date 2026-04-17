@@ -13,12 +13,125 @@
  *   5. Add an hourly trigger for `syncResidentsNow`.
  */
 
+// Populated automatically by discoverResidentLinks() — or fill in manually.
 var MEDREZ_RESIDENTS = [
   { name: 'Alberto Romo Valenzuela', title: 'R2', url: 'http://www.medrez.net/view.php?f=2b1yqpgbj971' },
-  // Add more: { name: 'Last, First', title: 'R1', url: 'http://www.medrez.net/view.php?f=...' },
 ];
 
+var MEDREZ_VIEW_URL = 'https://www.medrez.net/view.php?a=9s733y77k';
+var MEDREZ_PASSWORD = 'HGH5150';
+
 var ROSTER_TAB = 'roster';
+
+// ---------------------------------------------------------------
+// Auto-discovery: find all resident subscription links from the
+// Medrez schedule page and fetch name/title from their ICS feeds.
+// Run this once (or each July when the new class starts) to rebuild
+// MEDREZ_RESIDENTS automatically.
+//
+// Results are written to a `residents_config` tab so you can review
+// before committing — then paste the generated array into the script.
+// ---------------------------------------------------------------
+
+function discoverResidentLinks() {
+  var ui = SpreadsheetApp.getUi();
+
+  // Step 1: log in and get the page HTML.
+  var resp = UrlFetchApp.fetch(MEDREZ_VIEW_URL, { muteHttpExceptions: true, followRedirects: true });
+  var body = resp.getContentText();
+  if (resp.getResponseCode() !== 200) {
+    ui.alert('Login GET failed: HTTP ' + resp.getResponseCode()); return;
+  }
+
+  // POST password if needed.
+  if (body.toLowerCase().indexOf('type="password"') >= 0) {
+    var cookie = extractCookies_(resp);
+    resp = UrlFetchApp.fetch(MEDREZ_VIEW_URL, {
+      method: 'post',
+      payload: { password: MEDREZ_PASSWORD },
+      headers: cookie ? { Cookie: cookie } : {},
+      muteHttpExceptions: true, followRedirects: true,
+    });
+    body = resp.getContentText();
+    if (body.toLowerCase().indexOf('type="password"') >= 0) {
+      ui.alert('Password rejected.'); return;
+    }
+  }
+
+  // Step 2: scan entire response for view.php?f= tokens.
+  var tokenRe = /[?&]f=([a-z0-9]{8,})/gi;
+  var seen = {};
+  var tokens = [];
+  var m;
+  while ((m = tokenRe.exec(body)) !== null) {
+    var tok = m[1].toLowerCase();
+    if (!seen[tok]) { seen[tok] = true; tokens.push(tok); }
+  }
+  Logger.log('Found ' + tokens.length + ' unique f= tokens in page HTML.');
+
+  if (!tokens.length) {
+    ui.alert(
+      'No f= subscription tokens found in the page source.\n\n' +
+      'Medrez may load them via JavaScript after page render.\n' +
+      'You\'ll need to copy each link manually from the browser.'
+    );
+    return;
+  }
+
+  // Step 3: fetch each ICS to get the resident name from DESCRIPTION.
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('residents_config')
+    || ss.insertSheet('residents_config');
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, 4).setValues([['name', 'title', 'url', 'raw_description']]);
+  sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+
+  var rows = [];
+  for (var i = 0; i < tokens.length; i++) {
+    var url = 'http://www.medrez.net/view.php?f=' + tokens[i];
+    try {
+      var ics = fetchIcs_(url);
+      var events = extractVevents_(ics);
+      var name = '', title = '', rawDesc = '';
+      for (var j = 0; j < events.length; j++) {
+        rawDesc = icsField_(events[j], 'DESCRIPTION') || '';
+        // DESCRIPTION: "FirstName LastName  shift, ..."
+        var nameMatch = rawDesc.match(/^(.+?)\s{2,}shift/i)
+                     || rawDesc.match(/^(.+?)\s+shift/i);
+        if (nameMatch) { name = nameMatch[1].trim(); }
+        // Extract R-level from schedule name.
+        var schedMatch = rawDesc.match(/\b(R[1-4])\b/i);
+        if (schedMatch) { title = schedMatch[1].toUpperCase(); }
+        if (name) break;
+      }
+      rows.push([name || '(unknown)', title || '', url, rawDesc.slice(0, 120)]);
+      Logger.log('Token ' + tokens[i] + ': ' + name + ' ' + title);
+    } catch (err) {
+      rows.push(['(error: ' + err.message + ')', '', url, '']);
+      Logger.log('Token ' + tokens[i] + ': ERROR ' + err.message);
+    }
+    Utilities.sleep(200); // be gentle with the server
+  }
+
+  if (rows.length) {
+    sheet.getRange(2, 1, rows.length, 4).setValues(rows);
+  }
+
+  // Step 4: generate a ready-to-paste JS array in the log.
+  var jsArray = 'var MEDREZ_RESIDENTS = [\n' +
+    rows.map(function(r) {
+      return "  { name: '" + r[0] + "', title: '" + r[1] + "', url: '" + r[2] + "' },";
+    }).join('\n') +
+    '\n];';
+  Logger.log('=== PASTE THIS INTO THE SCRIPT ===\n' + jsArray);
+
+  sheet.autoResizeColumns(1, 4);
+  ui.alert(
+    'Found ' + tokens.length + ' resident link(s).\n\n' +
+    'Results written to the "residents_config" tab — review names/titles there.\n\n' +
+    'The full MEDREZ_RESIDENTS array is in the Execution Log, ready to paste.'
+  );
+}
 
 var SHIFT_PATTERNS = [
   { pattern: /night|noc|overnight/i, shift: 'night'   },
@@ -175,6 +288,13 @@ function parseIcsDate_(dtstart) {
   var m = dtstart.match(/(\d{4})(\d{2})(\d{2})/);
   if (!m) return null;
   return m[1] + '-' + m[2] + '-' + m[3];
+}
+
+function extractCookies_(resp) {
+  try {
+    var h = resp.getAllHeaders();
+    return h['Set-Cookie'] || h['set-cookie'] || '';
+  } catch (e) { return ''; }
 }
 
 function detectShift_(text, dtstart) {
