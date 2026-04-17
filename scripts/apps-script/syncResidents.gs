@@ -27,8 +27,10 @@ var MEDREZ_ICS_FEEDS = [
     label: 'R1',
     url: 'https://www.medrez.net/view.php?a=9s733y77k&s=br4v200xm&from_date=2025-06-23&to_date=2026-06-21&theme=ical&salt=0.7418443263884366',
   },
-  // { label: 'R2', url: '...' },
-  // { label: 'R3', url: '...' },
+  {
+    label: 'R2-R4',
+    url: 'https://www.medrez.net/view.php?a=9s733y77k&s=le9u5c4n6&from_date=2025-07-28&to_date=2026-07-26&theme=ical&salt=0.15048210449681',
+  },
 ];
 
 var MEDREZ_PASSWORD = 'HGH5150';
