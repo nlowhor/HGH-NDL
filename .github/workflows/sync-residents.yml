@@ -1,0 +1,52 @@
+name: Sync Residents from Medrez
+
+on:
+  schedule:
+    # Runs daily at 6 AM Pacific (14:00 UTC).
+    - cron: '0 14 * * *'
+  workflow_dispatch: # Allow manual trigger from Actions tab.
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: scripts/sync-residents/package.json
+
+      - name: Install dependencies
+        working-directory: scripts/sync-residents
+        run: npm install
+
+      - name: Install Chrome dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgbm-dev libasound2 libatk1.0-0 libatk-bridge2.0-0 \
+            libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+            libxdamage1 libxfixes3 libxrandr2 libpango-1.0-0 \
+            libcairo2 libnss3 libnspr4
+
+      - name: Run resident sync
+        working-directory: scripts/sync-residents
+        env:
+          CANONICAL_SHEET_ID:          ${{ secrets.CANONICAL_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: node index.js
+
+      - name: Upload debug screenshot
+        if: always() # Upload even if sync failed, for debugging.
+        uses: actions/upload-artifact@v4
+        with:
+          name: medrez-debug-screenshot
+          path: scripts/sync-residents/medrez-debug.png
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,14 @@
+{
+  "name": "hgh-sync-residents",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scrapes Medrez for resident shifts and writes to the canonical Google Sheet.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0",
+    "puppeteer": "^22.0.0"
+  }
+}
