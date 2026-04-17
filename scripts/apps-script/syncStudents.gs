@@ -60,8 +60,11 @@ const MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Roster Sync')
-    .addItem('Pull students now', 'syncStudentsNow')
-    .addItem('Show parse report', 'showParseReport')
+    .addItem('Pull students now',       'syncStudentsNow')
+    .addItem('Pull residents now',      'syncResidentsNow')
+    .addSeparator()
+    .addItem('Show student parse report', 'showParseReport')
+    .addItem('Diagnose Medrez fetch',     'diagnoseMedrez')
     .addToUi();
 }
 
