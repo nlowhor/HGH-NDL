@@ -116,40 +116,32 @@ function diagnoseMedrezLogin() {
 
 // Log a structural breakdown of the schedule page.
 function analyzeScheduleHtml_(html) {
-  // Strip <head> — we care about the body.
-  var bodyStart = html.toLowerCase().indexOf('<body');
-  var body = bodyStart >= 0 ? html.slice(bodyStart) : html;
+  Logger.log('Total HTML length: ' + html.length);
 
-  Logger.log('Body length: ' + body.length);
+  // Strip all <script> tags and their content to see the actual markup.
+  var stripped = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+  Logger.log('After stripping scripts: ' + stripped.length + ' chars');
 
-  // Log 4 evenly-spaced 600-char chunks so we see the whole page.
-  var chunkSize = 600;
-  var positions = [0, Math.floor(body.length * 0.25),
-                   Math.floor(body.length * 0.5), Math.floor(body.length * 0.75)];
-  positions.forEach(function(p, i) {
-    Logger.log('=== Body chunk ' + (i+1) + ' (offset ' + p + ') ===\n' +
-      body.slice(p, p + chunkSize));
-  });
+  // Strip <style> tags too.
+  stripped = stripped.replace(/<style[\s\S]*?<\/style>/gi, '');
+  Logger.log('After stripping styles: ' + stripped.length + ' chars');
 
-  // Search for embedded JSON data objects (schedule apps often bootstrap data this way).
-  var jsonMatches = body.match(/(?:window\.\w+|var \w+)\s*=\s*(\{[\s\S]{20,500}?\});/g) || [];
-  Logger.log('Embedded JS assignments found: ' + jsonMatches.length);
-  jsonMatches.slice(0, 5).forEach(function(m, i) {
-    Logger.log('JS assignment ' + (i+1) + ': ' + m.slice(0, 300));
-  });
+  // Log the stripped HTML in 800-char chunks (up to 4).
+  var chunkSize = 800;
+  for (var i = 0; i < Math.min(4, Math.ceil(stripped.length / chunkSize)); i++) {
+    Logger.log('=== Stripped chunk ' + (i+1) + ' ===\n' +
+      stripped.slice(i * chunkSize, (i+1) * chunkSize));
+  }
 
-  // Look for date patterns anywhere in the body.
-  var dateMatches = body.match(/\b(?:\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2})\b/g) || [];
-  Logger.log('Date-like strings found: ' + dateMatches.length +
-    (dateMatches.length ? (' — sample: ' + dateMatches.slice(0,10).join(', ')) : ''));
-
-  // Any <div> or <table> elements.
-  var divCount   = (body.match(/<div/gi) || []).length;
-  var tableCount = (body.match(/<table/gi) || []).length;
+  // Count structural elements.
+  var divCount   = (stripped.match(/<div/gi) || []).length;
+  var tableCount = (stripped.match(/<table/gi) || []).length;
   Logger.log('div count: ' + divCount + ', table count: ' + tableCount);
 
-  // Log the last 1000 chars (often where lazy-loaded content appears).
-  Logger.log('=== Body tail (last 1000 chars) ===\n' + body.slice(-1000));
+  // Look for date patterns in the stripped HTML.
+  var dateMatches = stripped.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g) || [];
+  Logger.log('Date-like strings: ' + dateMatches.length +
+    (dateMatches.length ? ' — ' + dateMatches.slice(0,10).join(', ') : ''));
 }
 
 // ---------------------------------------------------------------
