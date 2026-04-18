@@ -23,9 +23,8 @@ async function allLinks(page) {
 
 async function main() {
   const browser = await puppeteer.launch({
-    headless: false,          // opens a real browser window so you can watch
-    slowMo: 50,
-    args: ['--no-sandbox'],
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 900 });
@@ -58,30 +57,34 @@ async function main() {
   console.log(`Total links: ${links.length}`);
   links.forEach((l, i) => console.log(`  [${i}] ${l.href}  |  "${l.text}"`));
 
-  // ── 4. Visit first 3 unique view.php sub-pages ────────────────────
+  // ── 4. Visit every unique view.php sub-page ───────────────────────
   const landingUrl = page.url();
   const subPages = links
     .filter(l => l.href.includes('view.php') && l.href !== landingUrl)
-    .filter((l, i, arr) => arr.findIndex(x => x.href === l.href) === i)
-    .slice(0, 3);
+    .filter((l, i, arr) => arr.findIndex(x => x.href === l.href) === i);
+
+  console.log(`\nSub-pages to visit: ${subPages.length}`);
 
   for (let i = 0; i < subPages.length; i++) {
     const { href, text } = subPages[i];
-    console.log(`\n=== Step 4.${i + 1}: visiting "${text}" → ${href} ===`);
-    await page.goto(href, { waitUntil: 'networkidle2', timeout: 15_000 });
-    const fname = `diag-03-subpage-${i}.html`;
-    fs.writeFileSync(fname, await page.content());
-    await page.screenshot({ path: `diag-03-subpage-${i}.png`, fullPage: true });
-    console.log(`Saved ${fname}`);
+    console.log(`\n=== Step 4.${i + 1}/${subPages.length}: "${text}" → ${href} ===`);
+    try {
+      await page.goto(href, { waitUntil: 'networkidle2', timeout: 20_000 });
+      const slug = text.replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 30) || `page-${i}`;
+      const fname = `diag-sub-${String(i).padStart(2, '0')}-${slug}.html`;
+      fs.writeFileSync(fname, await page.content());
+      await page.screenshot({ path: fname.replace('.html', '.png'), fullPage: true });
+      console.log(`  Saved ${fname}`);
 
-    const subLinks = await allLinks(page);
-    console.log(`  Links on this page (${subLinks.length}):`);
-    subLinks.forEach(l => console.log(`    ${l.href}  |  "${l.text}"`));
+      const subLinks = await allLinks(page);
+      console.log(`  Links (${subLinks.length}):`);
+      subLinks.forEach(l => console.log(`    ${l.href}  |  "${l.text}"`));
+    } catch (err) {
+      console.warn(`  ERROR: ${err.message}`);
+    }
   }
 
-  console.log('\n=== Done. Check the diag-*.html files. ===');
-  // Leave browser open so you can poke around manually.
-  // Press Ctrl-C when done.
+  console.log('\n=== Done. ===');
 }
 
 main().catch(err => { console.error(err); process.exit(1); });
