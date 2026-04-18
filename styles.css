@@ -218,6 +218,24 @@ main {
   .card__name { font-size: 18px; }
 }
 
+.card--backup {
+  opacity: 0.7;
+  padding: 10px;
+  gap: 8px;
+}
+.card--backup .card__photo {
+  width: 80px;
+  height: 80px;
+  font-size: 26px;
+}
+.card--backup .card__name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.card--backup .card__meta {
+  font-size: 11px;
+}
+
 .empty {
   color: var(--muted);
   font-style: italic;

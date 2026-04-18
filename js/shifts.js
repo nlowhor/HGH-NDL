@@ -67,9 +67,12 @@ export function nextShiftAfter(instance) {
 
   // If the current shift's end wraps past midnight, the next shift
   // is on the following calendar day. Otherwise same day.
+  // Parse as local midnight (not UTC) to avoid date-offset bugs.
   const current = shifts[idx];
   const wraps = current.end <= current.start;
-  const nextDate = wraps ? isoDate(addDays(new Date(instance.date), 1)) : instance.date;
+  const [y, m, d] = instance.date.split("-").map(Number);
+  const localDate = new Date(y, m - 1, d); // local midnight
+  const nextDate = wraps ? isoDate(addDays(localDate, 1)) : instance.date;
   return { name: nextDef.name, label: nextDef.label, date: nextDate };
 }
 

@@ -52,7 +52,12 @@ function initials(name) {
     .map((s) => s[0].toUpperCase()).join("");
 }
 
+function isBackup(row) {
+  return /backup/i.test(row.notes);
+}
+
 function personCard(row) {
+  const backup = isBackup(row);
   const photo = el("div", { class: "card__photo" });
   if (row.photo_url) {
     const img = el("img", { src: row.photo_url, alt: row.name, loading: "lazy" });
@@ -65,7 +70,7 @@ function personCard(row) {
     photo.textContent = initials(row.name);
   }
   const meta = [row.title, row.notes].filter(Boolean).join(" · ");
-  return el("div", { class: "card" }, [
+  return el("div", { class: backup ? "card card--backup" : "card" }, [
     photo,
     el("div", { class: "card__name" }, row.name),
     meta ? el("div", { class: "card__meta" }, meta) : null,

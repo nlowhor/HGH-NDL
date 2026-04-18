@@ -87,9 +87,14 @@ export function groupByRole(rows) {
   for (const r of rows) {
     if (byRole[r.role]) byRole[r.role].push(r);
   }
-  // Sort alphabetically by name within each role.
+  // Sort: backup entries last, then alphabetically by name.
+  const isBackup = (r) => /backup/i.test(r.notes);
   for (const k of Object.keys(byRole)) {
-    byRole[k].sort((a, b) => a.name.localeCompare(b.name));
+    byRole[k].sort((a, b) => {
+      const ba = isBackup(a), bb = isBackup(b);
+      if (ba !== bb) return ba ? 1 : -1;
+      return a.name.localeCompare(b.name);
+    });
   }
   return byRole;
 }
