@@ -1,9 +1,9 @@
 'use strict';
 
 /**
- * Medrez diagnostic — run locally to inspect page structure.
- * Usage:  node diagnose.js
- * Outputs HTML files and a link report so we can find where f= tokens live.
+ * Medrez network diagnostic — captures all API/XHR calls the page makes
+ * after login so we can find the schedule data endpoints.
+ * Run via GitHub Actions "Diagnose Medrez Page Structure" workflow.
  */
 
 const puppeteer = require('puppeteer');
@@ -11,15 +11,6 @@ const fs        = require('fs');
 
 const MEDREZ_URL      = 'https://www.medrez.net/view.php?a=9s733y77k';
 const MEDREZ_PASSWORD = 'HGH5150';
-
-async function allLinks(page) {
-  return page.evaluate(() =>
-    [...document.querySelectorAll('a[href]')].map(a => ({
-      href: a.href,
-      text: a.textContent.trim().replace(/\s+/g, ' ').slice(0, 80),
-    }))
-  );
-}
 
 async function main() {
   const browser = await puppeteer.launch({
@@ -29,62 +20,111 @@ async function main() {
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 900 });
 
-  // ── 1. Landing page ────────────────────────────────────────────────
-  console.log('\n=== Step 1: landing page ===');
-  await page.goto(MEDREZ_URL, { waitUntil: 'networkidle2' });
-  fs.writeFileSync('diag-01-landing.html', await page.content());
-  console.log('Saved diag-01-landing.html');
+  // ── Capture every network response ────────────────────────────────
+  const captured = [];
+  page.on('response', async res => {
+    const url    = res.url();
+    const status = res.status();
+    const ct     = res.headers()['content-type'] || '';
+    // Capture HTML and JSON responses (skip images, fonts, css)
+    if (ct.includes('html') || ct.includes('json') || ct.includes('text')) {
+      try {
+        const body = await res.text();
+        captured.push({ url, status, ct, body: body.slice(0, 5000) });
+      } catch (_) {}
+    }
+  });
 
-  // ── 2. Login ───────────────────────────────────────────────────────
+  // ── 1. Landing / login ────────────────────────────────────────────
+  console.log('Navigating to Medrez…');
+  await page.goto(MEDREZ_URL, { waitUntil: 'networkidle2' });
+
   const pwInput = await page.$('input[type="password"]');
   if (pwInput) {
-    console.log('\n=== Step 2: logging in ===');
+    console.log('Submitting password…');
     await pwInput.type(MEDREZ_PASSWORD);
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'networkidle2' }),
       page.click('input[type="submit"]'),
     ]);
-    fs.writeFileSync('diag-02-after-login.html', await page.content());
-    await page.screenshot({ path: 'diag-02-after-login.png', fullPage: true });
-    console.log('Saved diag-02-after-login.html + .png');
-  } else {
-    console.log('No password form — already logged in or different page.');
   }
 
-  // ── 3. Enumerate all links ─────────────────────────────────────────
-  console.log('\n=== Step 3: all links on post-login page ===');
-  const links = await allLinks(page);
-  console.log(`Total links: ${links.length}`);
-  links.forEach((l, i) => console.log(`  [${i}] ${l.href}  |  "${l.text}"`));
+  // Wait a moment for any lazy-loaded data
+  await new Promise(r => setTimeout(r, 3000));
 
-  // ── 4. Visit every unique view.php sub-page ───────────────────────
-  const landingUrl = page.url();
-  const subPages = links
-    .filter(l => l.href.includes('view.php') && l.href !== landingUrl)
-    .filter((l, i, arr) => arr.findIndex(x => x.href === l.href) === i);
+  // ── 2. Save post-login page ───────────────────────────────────────
+  fs.writeFileSync('diag-main.html', await page.content());
+  await page.screenshot({ path: 'diag-main.png', fullPage: true });
+  console.log('Saved diag-main.html + diag-main.png');
 
-  console.log(`\nSub-pages to visit: ${subPages.length}`);
+  // ── 3. Extract all links on the page ─────────────────────────────
+  const links = await page.evaluate(() =>
+    [...document.querySelectorAll('a[href]')].map(a => ({
+      href: a.href,
+      text: a.textContent.trim().replace(/\s+/g, ' ').slice(0, 80),
+    }))
+  );
+  console.log(`\nAll links on post-login page (${links.length}):`);
+  links.forEach((l, i) => console.log(`  [${i}] "${l.text}"  →  ${l.href}`));
 
-  for (let i = 0; i < subPages.length; i++) {
-    const { href, text } = subPages[i];
-    console.log(`\n=== Step 4.${i + 1}/${subPages.length}: "${text}" → ${href} ===`);
+  // ── 4. Click each "view schedule" link and capture results ────────
+  const scheduleLinks = links.filter(l =>
+    l.text.toLowerCase().includes('view schedule') ||
+    l.text.toLowerCase().includes('schedule')
+  );
+  console.log(`\nSchedule-like links found: ${scheduleLinks.length}`);
+
+  for (let i = 0; i < scheduleLinks.length; i++) {
+    const { href, text } = scheduleLinks[i];
+    console.log(`\n--- Clicking schedule link [${i}]: "${text}" ---`);
+    captured.length = 0; // reset captures for this click
+
     try {
-      await page.goto(href, { waitUntil: 'networkidle2', timeout: 20_000 });
-      const slug = text.replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 30) || `page-${i}`;
-      const fname = `diag-sub-${String(i).padStart(2, '0')}-${slug}.html`;
+      // Click the link but intercept navigation — we want to stay logged in.
+      // If it's a same-page anchor or triggers AJAX, great.
+      // If it navigates away, we catch the new page content.
+      const [navResponse] = await Promise.all([
+        page.waitForNavigation({ timeout: 5000 }).catch(() => null),
+        page.evaluate((url) => { window.location.href = url; }, href),
+      ]);
+
+      await new Promise(r => setTimeout(r, 2000));
+
+      const slug  = text.replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 30);
+      const fname = `diag-sched-${String(i).padStart(2, '0')}-${slug}.html`;
       fs.writeFileSync(fname, await page.content());
       await page.screenshot({ path: fname.replace('.html', '.png'), fullPage: true });
       console.log(`  Saved ${fname}`);
 
-      const subLinks = await allLinks(page);
-      console.log(`  Links (${subLinks.length}):`);
-      subLinks.forEach(l => console.log(`    ${l.href}  |  "${l.text}"`));
+      // Show the visible text content (truncated)
+      const bodyText = await page.evaluate(() =>
+        document.body.innerText.slice(0, 2000).replace(/\s+/g, ' ')
+      );
+      console.log(`  Page text preview: ${bodyText}`);
+
+      // Go back to main page
+      await page.goto(MEDREZ_URL, { waitUntil: 'networkidle2' });
+      await new Promise(r => setTimeout(r, 1000));
+
     } catch (err) {
       console.warn(`  ERROR: ${err.message}`);
     }
   }
 
-  console.log('\n=== Done. ===');
+  // ── 5. Report all captured network responses ──────────────────────
+  console.log('\n\n=== CAPTURED NETWORK RESPONSES ===');
+  for (const r of captured) {
+    console.log(`\n[${r.status}] ${r.url}`);
+    console.log(`  Content-Type: ${r.ct}`);
+    console.log(`  Body preview: ${r.body.slice(0, 500).replace(/\s+/g, ' ')}`);
+  }
+
+  // Save full capture log
+  fs.writeFileSync('diag-network.json', JSON.stringify(captured, null, 2));
+  console.log('\nFull network log saved to diag-network.json');
+  console.log('\n=== Done ===');
+
+  await browser.close();
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

@@ -35,5 +35,6 @@ jobs:
           path: |
             scripts/sync-residents/diag-*.html
             scripts/sync-residents/diag-*.png
+            scripts/sync-residents/diag-*.json
           if-no-files-found: warn
           retention-days: 7
