@@ -1,142 +1,60 @@
+'use strict';
+
 /**
  * HGH Resident Schedule Sync
  * ---------------------------
- * Uses Puppeteer (headless Chrome) to log into the Medrez schedule
- * viewer, extract all resident calendar subscription links from the
- * rendered DOM, fetch each resident's ICS feed, and write the parsed
- * shifts into the canonical Google Sheet's `roster` tab.
+ * Logs into Medrez with Puppeteer, then calls two authenticated JSON APIs:
+ *   - getstaffs: all staff with IDs, names, and PGY levels
+ *   - getschedule: all shifts with dates, times, names, and assigned staff IDs
+ *
+ * Maps the results and writes resident shift rows to the canonical Google Sheet.
  *
  * Runs in GitHub Actions on a daily schedule. Can also be run locally:
  *   CANONICAL_SHEET_ID=... GOOGLE_SERVICE_ACCOUNT_JSON='...' node index.js
- *
- * Required environment variables:
- *   CANONICAL_SHEET_ID          — spreadsheet ID (from /d/<ID>/ in the URL)
- *   GOOGLE_SERVICE_ACCOUNT_JSON — full JSON of a service account key that
- *                                 has been granted Editor access to the sheet
  */
-
-'use strict';
 
 const puppeteer  = require('puppeteer');
 const { google } = require('googleapis');
-const https      = require('https');
-const fs         = require('fs');
 
-const MEDREZ_URL      = 'https://www.medrez.net/view.php?a=9s733y77k';
-const MEDREZ_PASSWORD = 'HGH5150';
-const ROSTER_TAB      = 'roster';
-const RESIDENT_ROLE   = 'resident';
+const MEDREZ_GROUP = '9s733y77k';
+const MEDREZ_URL   = `https://www.medrez.net/view.php?a=${MEDREZ_GROUP}`;
+const MEDREZ_PASS  = 'HGH5150';
 
-// ── Shift detection ───────────────────────────────────────────────
-function detectShift(dtstart) {
-  const m = dtstart.match(/T(\d{2})/);
-  if (!m) return 'day';
-  const h = parseInt(m[1], 10);
-  if (h >= 23 || h < 7)  return 'night';
-  if (h >= 15)            return 'evening';
+const ROSTER_TAB     = 'roster';
+const RESIDENT_ROLE  = 'resident';
+const DAYS_BEHIND    = 1;   // include yesterday so nothing is missed
+const DAYS_AHEAD     = 60;  // fetch two months ahead
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function isoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+// Medrez keys PGY levels by the ending calendar year of the academic year
+// (e.g. the 2025-2026 year uses key "2026").
+function medrezYear() {
+  const now   = new Date();
+  const month = now.getMonth() + 1; // 1-12
+  return month >= 7 ? now.getFullYear() + 1 : now.getFullYear();
+}
+
+function detectShift(startHour) {
+  const h = parseInt(startHour, 10);
+  if (h >= 23 || h < 7) return 'night';
+  if (h >= 15)           return 'evening';
   return 'day';
 }
 
-function parseIcsDate(dtstart) {
-  const m = dtstart.match(/(\d{4})(\d{2})(\d{2})/);
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+function pgyLabel(pgyStr) {
+  // "pgy1" → "R1", "pgy2" → "R2", etc.
+  const m = String(pgyStr).match(/(\d+)/);
+  return m ? `R${m[1]}` : '';
 }
 
-// ── ICS helpers ───────────────────────────────────────────────────
-function extractVevents(ics) {
-  const results = [];
-  const re = /BEGIN:VEVENT([\s\S]*?)END:VEVENT/g;
-  let m;
-  while ((m = re.exec(ics)) !== null) results.push(m[1]);
-  return results;
-}
+// ── Medrez API calls ──────────────────────────────────────────────────────────
 
-function icsField(block, field) {
-  const re = new RegExp(`(?:^|\\n)${field}[^:]*:([^\\n]*(?:\\n[ \\t][^\\n]*)*)`);
-  const m  = block.match(re);
-  if (!m) return null;
-  return m[1].replace(/\r/g, '').replace(/\n[ \t]/g, '').trim();
-}
-
-function fetchUrl(url) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https') ? https : require('http');
-    mod.get(url, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => resolve({ status: res.statusCode, body: data }));
-    }).on('error', reject);
-  });
-}
-
-function parseResidentIcs(ics, name, title) {
-  const events = extractVevents(ics);
-  const entries = [];
-  for (const ev of events) {
-    const summary = icsField(ev, 'SUMMARY') || '';
-    const dtstart = icsField(ev, 'DTSTART') || '';
-    if (/there was a problem/i.test(summary)) continue;
-    const date = parseIcsDate(dtstart);
-    if (!date) continue;
-    entries.push({
-      date,
-      shift:     detectShift(dtstart),
-      role:      RESIDENT_ROLE,
-      name,
-      title:     title || '',
-      photo_url: '',
-      notes:     summary,
-    });
-  }
-  return entries;
-}
-
-// Extract resident name from ICS DESCRIPTION field.
-// Format: "FirstName LastName  shift, ..." or "Name shift, ..."
-function nameFromDescription(desc) {
-  if (!desc) return null;
-  const m = desc.match(/^(.+?)\s{2,}shift/i) || desc.match(/^(.+?)\s+shift/i);
-  return m ? m[1].trim() : null;
-}
-
-// ── Puppeteer helpers ─────────────────────────────────────────────
-
-// Extract all f= tokens visible on the current page.
-// Checks <a href>, <input value>, and raw page text to catch all formats.
-async function extractFTokens(page) {
-  return page.evaluate(() => {
-    const results = {};
-    const add = (token, context) => {
-      const t = token.toLowerCase();
-      if (!results[t]) results[t] = context;
-    };
-
-    // <a href="...f=TOKEN..."> (http and webcal)
-    for (const a of document.querySelectorAll('a[href*="f="]')) {
-      const m = a.href.match(/[?&]f=([a-z0-9]+)/i);
-      if (!m) continue;
-      const row  = a.closest('tr');
-      const cell = a.closest('td') || a.closest('li') || a.parentElement;
-      add(m[1], (row?.textContent || cell?.textContent || '').trim().replace(/\s+/g, ' '));
-    }
-
-    // <input value="...f=TOKEN...">
-    for (const inp of document.querySelectorAll('input[value*="f="]')) {
-      const m = inp.value.match(/[?&]f=([a-z0-9]+)/i);
-      if (m) add(m[1], '');
-    }
-
-    // Any f= pattern anywhere in page text (copy-to-clipboard URLs etc.)
-    const re = /[?&]f=([a-z0-9]{4,})/gi;
-    let m;
-    while ((m = re.exec(document.body.innerText)) !== null) add(m[1], '');
-
-    return results;
-  });
-}
-
-// ── Puppeteer: get all f= tokens from Medrez DOM ──────────────────
-async function scrapeResidentTokens() {
+async function fetchMedrezData() {
   console.log('Launching Puppeteer…');
   const browser = await puppeteer.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
@@ -149,90 +67,95 @@ async function scrapeResidentTokens() {
     console.log('Navigating to Medrez…');
     await page.goto(MEDREZ_URL, { waitUntil: 'networkidle2' });
 
-    // Submit password if login form is present.
     const pwInput = await page.$('input[type="password"]');
     if (pwInput) {
       console.log('Password form found — submitting…');
-      await pwInput.type(MEDREZ_PASSWORD);
+      await pwInput.type(MEDREZ_PASS);
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'networkidle2' }),
         page.click('input[type="submit"]'),
       ]);
     }
 
-    console.log('Waiting for schedule to render…');
-    await page.waitForFunction(
-      () => document.querySelector('a[href]') !== null,
-      { timeout: 15_000 }
-    ).catch(() => console.warn('Page may not have fully rendered.'));
+    // Verify login succeeded
+    const loggedIn = await page.$('a[href*="logout"]');
+    if (!loggedIn) throw new Error('Login does not appear to have succeeded.');
+    console.log('Logged in.');
 
-    // Save debug artifacts.
-    await page.screenshot({ path: 'medrez-debug.png', fullPage: true });
-    console.log('Screenshot saved to medrez-debug.png');
-    fs.writeFileSync('medrez-debug.html', await page.content());
-    console.log('HTML saved to medrez-debug.html');
+    // ── getstaffs API ──────────────────────────────────────────────────────
+    const staffsUrl = `https://www.medrez.net/view.php?reqdata=getstaffs&a=${MEDREZ_GROUP}&async=yes&need=account`;
+    console.log('Fetching staff list…');
+    const staffsData = await page.evaluate(async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`getstaffs HTTP ${res.status}`);
+      return res.json();
+    }, staffsUrl);
 
-    // Step 1: try to find f= tokens directly on the landing page.
-    let found = await extractFTokens(page);
-    console.log(`f= links on landing page: ${Object.keys(found).length}`);
+    // ── getschedule API ────────────────────────────────────────────────────
+    const today = new Date();
+    const from  = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
+    const to    = new Date(today); to.setDate(to.getDate() + DAYS_AHEAD);
+    const schedUrl = `https://www.medrez.net/view.php?reqdata=getschedule&a=${MEDREZ_GROUP}&from_0=${isoDate(from)}&to_0=${isoDate(to)}&num_range=1&async=yes&curstaffonly=no`;
+    console.log(`Fetching schedule ${isoDate(from)} → ${isoDate(to)}…`);
+    const schedData = await page.evaluate(async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`getschedule HTTP ${res.status}`);
+      return res.json();
+    }, schedUrl);
 
-    // Step 2: if none found, navigate to each resident sub-page.
-    if (Object.keys(found).length === 0) {
-      console.log('No f= links on landing page — checking resident sub-pages…');
-
-      // Collect every view.php link that differs from the landing page URL.
-      // Resident links typically look like view.php?a=GROUP&p=RESIDENT_ID —
-      // previously we incorrectly skipped all links containing a=.
-      const landingUrl = await page.url();
-      const residentLinks = await page.evaluate((landing) => {
-        const seen = new Set([landing]);
-        const links = [];
-        for (const a of document.querySelectorAll('a[href]')) {
-          const href = a.href;
-          if (!href.includes('medrez.net')) continue;
-          if (!href.includes('view.php')) continue;
-          if (seen.has(href)) continue;
-          seen.add(href);
-          links.push({ href, text: a.textContent.trim().replace(/\s+/g, ' ') });
-        }
-        return links;
-      }, landingUrl);
-
-      console.log(`Found ${residentLinks.length} candidate resident link(s).`);
-
-      for (let i = 0; i < residentLinks.length; i++) {
-        const { href, text } = residentLinks[i];
-        try {
-          console.log(`  [${i + 1}/${residentLinks.length}] Visiting: ${href}`);
-          await page.goto(href, { waitUntil: 'networkidle2', timeout: 15_000 });
-          const subFound = await extractFTokens(page);
-          console.log(`    → f= tokens found: ${Object.keys(subFound).length}`);
-          for (const [token, nearby] of Object.entries(subFound)) {
-            if (!found[token]) found[token] = text || nearby;
-          }
-          // Save HTML of first sub-page for debugging.
-          if (i === 0) {
-            fs.writeFileSync('medrez-resident-debug.html', await page.content());
-            console.log('    → first sub-page HTML saved to medrez-resident-debug.html');
-          }
-        } catch (err) {
-          console.warn(`  Could not load ${href}: ${err.message}`);
-        }
-      }
-    }
-
-    const tokens = Object.entries(found); // [[token, nearbyText], ...]
-    console.log(`Found ${tokens.length} unique resident token(s) total.`);
-    return tokens;
+    return { staffsData, schedData };
 
   } finally {
     await browser.close();
   }
 }
 
-// ── Google Sheets ─────────────────────────────────────────────────
+// ── Parse JSON into roster entries ────────────────────────────────────────────
+
+function buildEntries(staffsData, schedData) {
+  const year = medrezYear();
+
+  // Map: staffId → { name, title }
+  const staffMap = {};
+  for (const [id, s] of Object.entries(staffsData.staffs || {})) {
+    const name = (s.staff_name?.str || '').trim();
+    if (!name) continue;
+    const pgyRaw = s.level?.years?.[year] || s.level?.years?.[String(year)] || '';
+    staffMap[id] = { name, title: pgyLabel(pgyRaw) };
+  }
+  console.log(`Staff mapped: ${Object.keys(staffMap).length}`);
+
+  const entries = [];
+  for (const [date, shifts] of Object.entries(schedData.sched || {})) {
+    for (const shift of shifts) {
+      const shiftName = shift.name?.str || '';
+      const startHour = shift.start_time?.hour ?? '7';
+      for (const staffId of (shift.staffs || [])) {
+        const staff = staffMap[staffId];
+        if (!staff) continue;
+        entries.push({
+          date,
+          shift:     detectShift(startHour),
+          role:      RESIDENT_ROLE,
+          name:      staff.name,
+          title:     staff.title,
+          photo_url: '',
+          notes:     shiftName,
+        });
+      }
+    }
+  }
+
+  // Sort by date then name for deterministic sheet order.
+  entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+  console.log(`Shift entries parsed: ${entries.length}`);
+  return entries;
+}
+
+// ── Google Sheets ─────────────────────────────────────────────────────────────
+
 async function getSheetsClient() {
-  const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  const key  = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
   const auth = new google.auth.GoogleAuth({
     credentials: key,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
@@ -241,16 +164,17 @@ async function getSheetsClient() {
 }
 
 async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
-  const sheetRes = await sheets.spreadsheets.values.get({
+  // Read header row.
+  const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `${ROSTER_TAB}!1:1`,
   });
-  const headers = (sheetRes.data.values?.[0] || [])
+  const headers = (headerRes.data.values?.[0] || [])
     .map(h => String(h).trim().toLowerCase());
 
   const col = name => {
     const i = headers.indexOf(name);
-    if (i < 0) throw new Error(`roster tab missing column: ${name}`);
+    if (i < 0) throw new Error(`roster tab missing column: "${name}"`);
     return i;
   };
   const roleCol  = col('role');
@@ -262,48 +186,38 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
   const notesCol = headers.indexOf('notes');
 
   // Read all rows to find existing resident rows.
-  const allRes = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: ROSTER_TAB,
-  });
-  const rows = allRes.data.values || [];
+  const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
+  const rows   = allRes.data.values || [];
 
-  // Find 1-based row indices of existing resident rows (skip header).
+  // Collect 1-based row indices of resident rows (skip header at row 1).
   const toDelete = [];
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === RESIDENT_ROLE) {
-      toDelete.push(i + 1); // 1-based sheet row
+      toDelete.push(i + 1);
     }
   }
 
-  // Delete bottom-up via batchUpdate.
+  // Delete existing resident rows bottom-up.
   if (toDelete.length) {
     console.log(`Deleting ${toDelete.length} existing resident rows…`);
-    const sheetMeta = await sheets.spreadsheets.get({ spreadsheetId });
-    const rosterSheet = sheetMeta.data.sheets.find(
-      s => s.properties.title === ROSTER_TAB
-    );
-    const sheetId = rosterSheet.properties.sheetId;
-    const requests = toDelete.reverse().map(rowNum => ({
-      deleteDimension: {
-        range: {
-          sheetId,
-          dimension: 'ROWS',
-          startIndex: rowNum - 1,
-          endIndex: rowNum,
-        },
-      },
-    }));
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const sheetId = meta.data.sheets
+      .find(s => s.properties.title === ROSTER_TAB).properties.sheetId;
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
-      requestBody: { requests },
+      requestBody: {
+        requests: toDelete.reverse().map(rowNum => ({
+          deleteDimension: {
+            range: { sheetId, dimension: 'ROWS', startIndex: rowNum - 1, endIndex: rowNum },
+          },
+        })),
+      },
     });
   }
 
   if (!entries.length) { console.log('No entries to append.'); return 0; }
 
-  // Build rows to append.
-  const width = headers.length;
+  const width   = headers.length;
   const newRows = entries.map(e => {
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
@@ -327,62 +241,25 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
   return newRows.length;
 }
 
-// ── Main ──────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
+
 async function main() {
   const spreadsheetId = process.env.CANONICAL_SHEET_ID;
-  if (!spreadsheetId)  throw new Error('CANONICAL_SHEET_ID env var is required.');
+  if (!spreadsheetId)
+    throw new Error('CANONICAL_SHEET_ID env var is required.');
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON)
     throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
-  // Step 1: get resident subscription tokens from Medrez DOM.
-  const tokens = await scrapeResidentTokens();
+  const { staffsData, schedData } = await fetchMedrezData();
+  const entries = buildEntries(staffsData, schedData);
 
-  if (!tokens.length) {
-    console.error('No resident links found. Check medrez-debug.png for the page state.');
+  if (!entries.length) {
+    console.error('No entries parsed from Medrez API — aborting.');
     process.exit(1);
   }
 
-  // Step 2: fetch ICS for each token and parse shifts.
-  const allEntries = [];
-  const errors     = [];
-
-  for (const [token, nearbyText] of tokens) {
-    const url = `http://www.medrez.net/view.php?f=${token}`;
-    try {
-      const { status, body } = await fetchUrl(url);
-      if (status !== 200 || body.indexOf('BEGIN:VCALENDAR') < 0) {
-        throw new Error(`HTTP ${status} / not ICS`);
-      }
-
-      // Extract name: prefer ICS DESCRIPTION, fall back to DOM nearby text.
-      const firstEvent = extractVevents(body)[0] || '';
-      const desc       = icsField(firstEvent, 'DESCRIPTION') || '';
-      const name       = nameFromDescription(desc) || nearbyText.slice(0, 60) || token;
-
-      // Extract R-level from DESCRIPTION if possible.
-      const titleMatch = desc.match(/\b(R[1-4])\b/i);
-      const title      = titleMatch ? titleMatch[1].toUpperCase() : '';
-
-      const entries = parseResidentIcs(body, name, title);
-      console.log(`  ${name} (${title || '?'}): ${entries.length} shifts`);
-      allEntries.push(...entries);
-
-      // Brief pause to be gentle with the server.
-      await new Promise(r => setTimeout(r, 250));
-    } catch (err) {
-      errors.push(`${token}: ${err.message}`);
-      console.warn(`  WARNING ${token}: ${err.message}`);
-    }
-  }
-
-  if (errors.length) {
-    console.warn(`\n${errors.length} feed error(s):\n${errors.join('\n')}`);
-  }
-
-  // Step 3: write to canonical sheet.
   const sheets = await getSheetsClient();
-  const n = await writeResidentsToSheet(sheets, spreadsheetId, allEntries);
-
+  const n = await writeResidentsToSheet(sheets, spreadsheetId, entries);
   console.log(`\nDone. ${n} resident shift rows written to sheet.`);
 }
 
