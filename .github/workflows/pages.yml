@@ -8,6 +8,7 @@ on:
     branches:
       - main
       - claude/hospital-er-staff-display-rqHvl
+      - claude/fix-resident-headshots-GNd82
   workflow_dispatch:
 
 permissions:
