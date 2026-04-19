@@ -56,6 +56,9 @@ export function normalizeRows(rows) {
     const name = (r.name || "").trim();
     const date = (r.date || "").trim();
     if (!role || !shift || !name || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const rawPhoto = (r.photo_url || r["photo url"] || r.photo || r.headshot || r.image || "").trim();
+    const photo = rewritePhotoUrl(rawPhoto);
+    if (rawPhoto && !photo) console.warn("[sheet] photo URL dropped by rewriter:", rawPhoto);
     out.push({
       date,
       shift,
@@ -63,9 +66,12 @@ export function normalizeRows(rows) {
       name,
       title: (r.title || "").trim(),
       notes: (r.notes || "").trim(),
-      photo_url: rewritePhotoUrl((r.photo_url || r.photo || "").trim()),
+      photo_url: photo,
       source: "sheet",
     });
   }
+  const withPhoto = out.filter(r => r.photo_url);
+  console.log(`[sheet] ${out.length} rows loaded, ${withPhoto.length} with photo_url`);
+  if (withPhoto.length) console.log("[sheet] sample photo URLs:", withPhoto.slice(0, 3).map(r => `${r.name}: ${r.photo_url}`));
   return out;
 }

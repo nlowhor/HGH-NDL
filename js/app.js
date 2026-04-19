@@ -62,6 +62,7 @@ function personCard(row) {
   if (row.photo_url) {
     const img = el("img", { src: row.photo_url, alt: row.name, loading: "lazy" });
     img.addEventListener("error", () => {
+      console.warn("[headshot] failed to load:", row.photo_url, "for", row.name);
       photo.innerHTML = "";
       photo.textContent = initials(row.name);
     });
