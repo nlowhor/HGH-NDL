@@ -190,12 +190,20 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
   const rows   = allRes.data.values || [];
 
   // Collect 1-based row indices of resident rows (skip header at row 1).
+  // Also capture any existing photo_url values so they survive the rewrite.
   const toDelete = [];
+  const savedPhotos = {}; // name (lowercase) → photo_url
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === RESIDENT_ROLE) {
       toDelete.push(i + 1);
+      if (photoCol >= 0) {
+        const name  = String(rows[i][nameCol] || '').trim().toLowerCase();
+        const photo = String(rows[i][photoCol] || '').trim();
+        if (name && photo) savedPhotos[name] = photo;
+      }
     }
   }
+  console.log(`Preserved photo_url for ${Object.keys(savedPhotos).length} resident(s).`);
 
   // Delete existing resident rows bottom-up.
   if (toDelete.length) {
@@ -224,9 +232,9 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
     row[shiftCol] = e.shift;
     row[roleCol]  = RESIDENT_ROLE;
     row[nameCol]  = e.name;
-    if (titleCol >= 0) row[titleCol] = e.title     || '';
-    if (photoCol >= 0) row[photoCol] = e.photo_url || '';
-    if (notesCol >= 0) row[notesCol] = e.notes     || '';
+    if (titleCol >= 0) row[titleCol] = e.title || '';
+    if (photoCol >= 0) row[photoCol] = e.photo_url || savedPhotos[e.name.toLowerCase()] || '';
+    if (notesCol >= 0) row[notesCol] = e.notes || '';
     return row;
   });
 
