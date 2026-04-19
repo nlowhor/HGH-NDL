@@ -25,13 +25,17 @@ function normShift(v) {
 
 // Some photo links (e.g. Drive "open?id=..." or "file/d/.../view") need
 // rewriting to a directly-embeddable URL. Pass through anything else.
+//
+// drive.google.com/uc?export=view is deprecated — Google now returns an HTML
+// warning page instead of the raw image. lh3.googleusercontent.com/d/FILE_ID
+// serves the image directly and works in <img> tags.
 function rewritePhotoUrl(url) {
   if (!url) return "";
-  const m1 = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
-  if (m1) return `https://drive.google.com/uc?export=view&id=${m1[1]}`;
+  const m1 = url.match(/drive\.google\.com\/file\/d\/([^/?]+)/);
+  if (m1) return `https://lh3.googleusercontent.com/d/${m1[1]}`;
   const m2 = url.match(/[?&]id=([^&]+)/);
   if (m2 && url.includes("drive.google.com")) {
-    return `https://drive.google.com/uc?export=view&id=${m2[1]}`;
+    return `https://lh3.googleusercontent.com/d/${m2[1]}`;
   }
   return url;
 }
