@@ -1,15 +1,22 @@
 'use strict';
 
 /**
- * HGH Student Photo Sync
- * ----------------------
- * Opens the Airtable shared view with Puppeteer, intercepts the JSON payload
- * that Airtable fetches to render the table, and extracts student names and
- * photo URLs.  Matches those names against student rows in the canonical
- * Google Sheet and writes the photo_url column for any matches.
+ * HGH Student Schedule + Photo Sync
+ * -----------------------------------
+ * 1. Reads all tabs of the student clerkship schedule Google Sheet.
+ *    Each tab is a rotation block laid out as a visual calendar.
+ *    Parses shift assignments into flat { date, shift, role, name, notes }
+ *    rows for the configured date window.
+ * 2. Opens the Airtable shared view with Puppeteer and extracts student
+ *    headshot URLs.  Attaches photos to matching schedule entries.
+ * 3. Replaces all student rows in the canonical roster Google Sheet.
  *
- * Runs in GitHub Actions on a daily schedule. Can also be run locally:
- *   CANONICAL_SHEET_ID=... GOOGLE_SERVICE_ACCOUNT_JSON='...' node index.js
+ * Required env vars:
+ *   CANONICAL_SHEET_ID          – roster sheet to write to
+ *   STUDENT_SCHEDULE_SHEET_ID   – clerkship schedule sheet to read from
+ *   GOOGLE_SERVICE_ACCOUNT_JSON – service account credentials
+ *
+ * Runs in GitHub Actions on a daily schedule. Can also be run locally.
  */
 
 const puppeteer  = require('puppeteer');
@@ -19,11 +26,215 @@ const AIRTABLE_URL = 'https://airtable.com/appXHrYewBeH8Rwmh/shrXE7nBIQyO13XMz?1
 
 const ROSTER_TAB   = 'roster';
 const STUDENT_ROLE = 'student';
+const DAYS_BEHIND  = 1;
+const DAYS_AHEAD   = 60;
 
-// ── Airtable scraping ─────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function normalizeName(s) {
+  return String(s || '')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[_,\-]+/g, ' ')
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .sort()
+    .join(' ');
+}
+
+// Map shift label text → canonical shift name + notes string.
+const SHIFT_LABEL_MAP = {
+  'RN DAY':     { shift: 'day',     notes: 'RN Day' },
+  'DAY-BUP':    { shift: 'day',     notes: 'Day-BUP' },
+  'DAY':        { shift: 'day',     notes: '' },
+  'FT':         { shift: 'day',     notes: 'Fast Track' },
+  'FAST TRACK': { shift: 'day',     notes: 'Fast Track' },
+  'SWING':      { shift: 'evening', notes: '' },
+  'NIGHT':      { shift: 'night',   notes: '' },
+  'NIGHTS':     { shift: 'night',   notes: '' },
+};
+
+// Labels that occupy a shift-type cell but are NOT student assignments.
+const SKIP_LABEL = /^(orientation|bridge|conference|lecture|holiday|off|em |bup$)/i;
+
+const DAY_NAMES = ['MON', 'TUES', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
+// Parse a cell value into an ISO date string, given a hint year.
+function parseDate(val, hintYear) {
+  if (!val) return null;
+  const s = String(val).trim();
+
+  // "May-4" or "May 4"
+  const monthDay = s.match(/^([A-Za-z]+)[\s\-](\d{1,2})$/);
+  if (monthDay) {
+    const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+    const m = months.indexOf(monthDay[1].toLowerCase());
+    if (m < 0) return null;
+    const d = parseInt(monthDay[2], 10);
+    const year = hintYear || new Date().getFullYear();
+    return `${year}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  // "5/4/26" or "5/4/2026"
+  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (mdy) {
+    const year = mdy[3].length === 2 ? 2000 + parseInt(mdy[3], 10) : parseInt(mdy[3], 10);
+    return `${year}-${String(parseInt(mdy[1], 10)).padStart(2, '0')}-${String(parseInt(mdy[2], 10)).padStart(2, '0')}`;
+  }
+
+  return null;
+}
+
+// Guess the year from a tab name like "#Block 1 (5/4-5/31/26)" or "2026 #Block 12".
+function yearFromTabName(name) {
+  const m4 = name.match(/\b(20\d{2})\b/);
+  if (m4) return parseInt(m4[1], 10);
+  // "/YY" at end of a date range
+  const m2 = name.match(/\/(\d{2})\b/);
+  if (m2) return 2000 + parseInt(m2[1], 10);
+  return null;
+}
+
+// ── Schedule parsing ──────────────────────────────────────────────────────────
+
+function parseScheduleTab(rows, tabName) {
+  const hintYear = yearFromTabName(tabName);
+  const entries  = [];
+
+  // Find "Rotation Start Date" to use as year anchor.
+  let rotationYear = hintYear;
+  for (const row of rows) {
+    for (let c = 0; c < row.length - 1; c++) {
+      if (/rotation start date/i.test(String(row[c] || ''))) {
+        const d = parseDate(String(row[c + 1] || ''), hintYear);
+        if (d) { rotationYear = parseInt(d.slice(0, 4), 10); break; }
+      }
+    }
+    if (rotationYear) break;
+  }
+
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i] || [];
+
+    // Detect a day-header row: contains ≥ 3 recognised day-of-week names.
+    const dayPositions = {}; // 'MON' → column index
+    for (let c = 0; c < row.length; c++) {
+      const v = String(row[c] || '').trim().toUpperCase();
+      if (DAY_NAMES.includes(v)) dayPositions[v] = c;
+    }
+
+    if (Object.keys(dayPositions).length < 3) { i++; continue; }
+
+    // The row immediately after the day headers contains the dates.
+    // (Sometimes "WEEK N" appears in col B of that row — skip it.)
+    const dateRow = rows[i + 1] || [];
+    const dateMap = {}; // 'MON' → ISO date
+    for (const [day, col] of Object.entries(dayPositions)) {
+      const d = parseDate(String(dateRow[col] || ''), rotationYear);
+      if (d) dateMap[day] = d;
+    }
+
+    // Scan data rows until the next day-header block.
+    let j = i + 2;
+    while (j < rows.length) {
+      const dataRow = rows[j] || [];
+
+      // Stop if this row looks like another day-header row.
+      const dayCount = dataRow.filter(v =>
+        DAY_NAMES.includes(String(v || '').trim().toUpperCase())
+      ).length;
+      if (dayCount >= 3 && j > i + 2) break;
+
+      for (const [day, col] of Object.entries(dayPositions)) {
+        const date = dateMap[day];
+        if (!date) continue;
+
+        const rawLabel = String(dataRow[col]     || '').trim();
+        const rawName  = String(dataRow[col + 1] || '').trim();
+
+        if (!rawLabel || !rawName) continue;
+        if (SKIP_LABEL.test(rawLabel)) continue;
+        if (SKIP_LABEL.test(rawName))  continue;
+
+        const mapped = SHIFT_LABEL_MAP[rawLabel.toUpperCase()];
+        if (!mapped) continue;
+
+        entries.push({
+          date,
+          shift:     mapped.shift,
+          role:      STUDENT_ROLE,
+          name:      rawName,
+          title:     '',
+          notes:     mapped.notes,
+          photo_url: '',
+        });
+      }
+
+      j++;
+    }
+
+    i = j;
+  }
+
+  return entries;
+}
+
+// ── Google Sheets — read student schedule ────────────────────────────────────
+
+async function fetchStudentSchedule(auth) {
+  const scheduleSheetId = process.env.STUDENT_SCHEDULE_SHEET_ID;
+  if (!scheduleSheetId) throw new Error('STUDENT_SCHEDULE_SHEET_ID env var is required.');
+
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  // List all tabs.
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: scheduleSheetId });
+  const tabs  = meta.data.sheets.map(s => ({
+    id:    s.properties.sheetId,
+    title: s.properties.title,
+  }));
+  console.log(`Schedule sheet has ${tabs.length} tab(s): ${tabs.map(t => t.title).join(', ')}`);
+
+  // Date window.
+  const today = new Date();
+  const from  = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
+  const to    = new Date(today); to.setDate(to.getDate() + DAYS_AHEAD);
+  const fromIso = from.toISOString().slice(0, 10);
+  const toIso   = to.toISOString().slice(0, 10);
+
+  const allEntries = [];
+
+  for (const tab of tabs) {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: scheduleSheetId,
+      range: tab.title,
+    });
+    const rows    = res.data.values || [];
+    const entries = parseScheduleTab(rows, tab.title);
+
+    // Filter to the date window.
+    const inWindow = entries.filter(e => e.date >= fromIso && e.date <= toIso);
+    console.log(`  ${tab.title}: ${entries.length} entries parsed, ${inWindow.length} in window.`);
+    allEntries.push(...inWindow);
+  }
+
+  // Deduplicate by date+shift+name.
+  const seen = new Set();
+  const deduped = allEntries.filter(e => {
+    const key = `${e.date}|${e.shift}|${e.name.toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+
+  console.log(`Total student entries in window: ${deduped.length}`);
+  return deduped;
+}
+
+// ── Airtable photo scraping ───────────────────────────────────────────────────
 
 async function fetchStudentPhotos() {
-  console.log('Launching Puppeteer…');
+  console.log('\nLaunching Puppeteer for Airtable photos…');
   const browser = await puppeteer.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
     headless: 'new',
@@ -31,234 +242,203 @@ async function fetchStudentPhotos() {
   const page = await browser.newPage();
   page.setDefaultTimeout(60_000);
 
-  // Collect Airtable API responses as the page loads.
   const apiPayloads = [];
   page.on('response', async (response) => {
-    const url = response.url();
-    if (!url.includes('airtable.com')) return;
-    const ct = response.headers()['content-type'] || '';
-    if (!ct.includes('application/json')) return;
-    try {
-      const json = await response.json();
-      apiPayloads.push({ url, json });
-    } catch (_) { /* ignore non-JSON */ }
+    if (!response.url().includes('airtable.com')) return;
+    if (!(response.headers()['content-type'] || '').includes('application/json')) return;
+    try { apiPayloads.push(await response.json()); } catch (_) {}
   });
 
   try {
     console.log('Navigating to Airtable shared view…');
     await page.goto(AIRTABLE_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
-
-    // Give late-loading XHR a moment to complete.
     await new Promise(r => setTimeout(r, 3000));
-
-    // Save a screenshot for debugging in CI.
     await page.screenshot({ path: 'airtable-debug.png', fullPage: false });
-    console.log('Screenshot saved: airtable-debug.png');
 
-    // ── Strategy 1: parse intercepted JSON payloads ───────────────────────
-    const students = extractFromApiPayloads(apiPayloads);
-    if (students.length) {
-      console.log(`Extracted ${students.length} student(s) from API payloads.`);
-      return students;
+    // Strategy 1: intercept API payloads.
+    const photos = extractPhotosFromPayloads(apiPayloads);
+    if (photos.size) {
+      console.log(`Airtable: ${photos.size} photo(s) from API payloads.`);
+      return photos;
     }
-    console.log('No data from API payloads; falling back to DOM extraction…');
 
-    // ── Strategy 2: extract from rendered DOM ─────────────────────────────
-    const domStudents = await page.evaluate(() => {
-      const results = [];
-      // Airtable grid: each row is a <tr> or a div with role="row".
-      // We look for cells that contain an image (attachment) alongside a text cell.
+    // Strategy 2: DOM extraction.
+    const domPhotos = await page.evaluate(() => {
+      const out = {};
       const rows = Array.from(document.querySelectorAll('[data-rowindex], tr'));
       for (const row of rows) {
         const imgs = Array.from(row.querySelectorAll('img[src]'))
-          .filter(img => img.src && !img.src.includes('airtable.com/brand'));
+          .filter(img => !/brand|logo|icon/i.test(img.src));
         if (!imgs.length) continue;
-        // Take the first non-trivially-sized image as the headshot.
-        const photoUrl = imgs[0].src;
-        // Name: look for a text node in the row that isn't a number/date.
         const texts = Array.from(row.querySelectorAll('[data-columnindex="0"], .cell-wrapper, td'))
           .map(el => el.textContent.trim())
-          .filter(t => t && t.length > 1 && !/^\d+$/.test(t));
+          .filter(t => t && /^[A-Za-z]+ [A-Za-z]/.test(t));
         if (!texts.length) continue;
-        results.push({ name: texts[0], photo_url: photoUrl });
+        out[texts[0]] = imgs[0].src;
       }
-      return results;
+      return out;
     });
 
-    if (domStudents.length) {
-      console.log(`Extracted ${domStudents.length} student(s) from DOM.`);
-      return domStudents;
+    const domMap = new Map(Object.entries(domPhotos));
+    if (domMap.size) {
+      console.log(`Airtable: ${domMap.size} photo(s) from DOM.`);
+      return domMap;
     }
 
-    // Save the full HTML for debugging if both strategies failed.
-    const html = await page.content();
-    require('fs').writeFileSync('airtable-debug.html', html);
-    console.warn('Both extraction strategies found 0 students. Saved airtable-debug.html.');
-    return [];
+    const html = require('fs').readFileSync ? null : null;
+    require('fs').writeFileSync('airtable-debug.html', await page.content());
+    console.warn('Airtable: no photos found. Saved airtable-debug.html for inspection.');
+    return new Map();
 
   } finally {
     await browser.close();
   }
 }
 
-function extractFromApiPayloads(payloads) {
-  const students = [];
-  for (const { json } of payloads) {
-    // Airtable API responses nest records differently depending on the endpoint.
-    // Try common shapes.
+function extractPhotosFromPayloads(payloads) {
+  const photos = new Map(); // normalised name → url
+  for (const json of payloads) {
     const records = (
-      json.data?.tableData?.rows ||       // shared view metadata
+      json.data?.tableData?.rows ||
       json.data?.rows ||
       json.rows ||
       json.records ||
       []
     );
     if (!records.length) continue;
-
     for (const record of records) {
-      // Fields can be under record.cellValuesByColumnId, record.fields, etc.
       const fields = record.cellValuesByColumnId || record.fields || record;
       if (typeof fields !== 'object') continue;
-
       const values = Object.values(fields);
-
-      // Find name: a string field that looks like a person's name (two words, no numbers).
-      const nameField = values.find(v =>
-        typeof v === 'string' && /^[A-Za-z]+ [A-Za-z]/.test(v)
-      );
+      const nameField = values.find(v => typeof v === 'string' && /^[A-Za-z]+ [A-Za-z]/.test(v));
       if (!nameField) continue;
-
-      // Find photo: an attachment array or a string URL.
-      let photoUrl = '';
+      let url = '';
       for (const v of values) {
-        if (typeof v === 'string' && /^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(v)) {
-          photoUrl = v; break;
-        }
-        if (Array.isArray(v) && v[0]?.url) {
-          photoUrl = v[0].url; break;
-        }
-        if (Array.isArray(v) && v[0]?.thumbnails?.large?.url) {
-          photoUrl = v[0].thumbnails.large.url; break;
-        }
+        if (typeof v === 'string' && /^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(v)) { url = v; break; }
+        if (Array.isArray(v) && v[0]?.thumbnails?.large?.url) { url = v[0].thumbnails.large.url; break; }
+        if (Array.isArray(v) && v[0]?.url) { url = v[0].url; break; }
       }
-
-      if (nameField && photoUrl) {
-        students.push({ name: nameField, photo_url: photoUrl });
-      }
+      if (url) photos.set(normalizeName(nameField), url);
     }
-
-    if (students.length) break; // stop at the first payload that yielded data
+    if (photos.size) break;
   }
-  return students;
+  return photos;
 }
 
-// ── Google Sheets ─────────────────────────────────────────────────────────────
+// ── Google Sheets — write canonical roster ────────────────────────────────────
 
-async function getSheetsClient() {
-  const key  = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-  const auth = new google.auth.GoogleAuth({
+async function getAuth() {
+  const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  return new google.auth.GoogleAuth({
     credentials: key,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
-  return google.sheets({ version: 'v4', auth });
 }
 
-async function updateStudentPhotos(sheets, spreadsheetId, students) {
-  if (!students.length) {
-    console.log('No students to update.');
-    return 0;
-  }
+async function writeStudentsToSheet(auth, spreadsheetId, entries, photoMap) {
+  const sheets = google.sheets({ version: 'v4', auth });
 
-  // Build a lookup: normalised name → photo_url.
-  const photoByName = {};
-  for (const { name, photo_url } of students) {
-    photoByName[name.trim().toLowerCase()] = photo_url;
-  }
-
-  // Read the full sheet to find student rows.
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
-  const rows = res.data.values || [];
-  if (!rows.length) { console.log('Sheet is empty.'); return 0; }
-
-  const headers = rows[0].map(h => String(h).trim().toLowerCase());
-  const roleCol  = headers.indexOf('role');
-  const nameCol  = headers.indexOf('name');
-  const photoCol = headers.indexOf('photo_url');
-
-  if (roleCol < 0 || nameCol < 0 || photoCol < 0) {
-    throw new Error(`Sheet missing required column(s). Found headers: ${headers.join(', ')}`);
-  }
-
-  // Collect batchUpdate data: one ValueRange per student row that needs updating.
-  const data = [];
-  let matched = 0;
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    if (String(row[roleCol] || '').trim().toLowerCase() !== STUDENT_ROLE) continue;
-
-    const name    = String(row[nameCol] || '').trim().toLowerCase();
-    const photoUrl = photoByName[name];
-    if (!photoUrl) continue;
-
-    const existing = String(row[photoCol] || '').trim();
-    if (existing === photoUrl) continue; // already up-to-date
-
-    // Sheets rows are 1-based; header is row 1, so data rows start at row 2.
-    const sheetRow = i + 1;
-    const colLetter = colToLetter(photoCol);
-    data.push({
-      range: `${ROSTER_TAB}!${colLetter}${sheetRow}`,
-      values: [[photoUrl]],
-    });
-    matched++;
-    console.log(`  ${row[nameCol]}: updating photo_url`);
-  }
-
-  if (!data.length) {
-    console.log('All student photo URLs are already up-to-date (or no matching names found).');
-    return 0;
-  }
-
-  await sheets.spreadsheets.values.batchUpdate({
+  // Read headers.
+  const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    requestBody: { valueInputOption: 'RAW', data },
+    range: `${ROSTER_TAB}!1:1`,
+  });
+  const headers = (headerRes.data.values?.[0] || [])
+    .map(h => String(h).trim().toLowerCase());
+
+  const col = name => {
+    const i = headers.indexOf(name);
+    if (i < 0) throw new Error(`roster tab missing column: "${name}"`);
+    return i;
+  };
+  const roleCol  = col('role');
+  const dateCol  = col('date');
+  const shiftCol = col('shift');
+  const nameCol  = col('name');
+  const titleCol = headers.indexOf('title');
+  const photoCol = headers.indexOf('photo_url');
+  const notesCol = headers.indexOf('notes');
+
+  // Delete existing student rows.
+  const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
+  const rows   = allRes.data.values || [];
+  const toDelete = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE)
+      toDelete.push(i + 1);
+  }
+
+  if (toDelete.length) {
+    const meta    = await sheets.spreadsheets.get({ spreadsheetId });
+    const sheetId = meta.data.sheets
+      .find(s => s.properties.title === ROSTER_TAB).properties.sheetId;
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: toDelete.reverse().map(rowNum => ({
+          deleteDimension: {
+            range: { sheetId, dimension: 'ROWS', startIndex: rowNum - 1, endIndex: rowNum },
+          },
+        })),
+      },
+    });
+    console.log(`Deleted ${toDelete.length} existing student row(s).`);
+  }
+
+  if (!entries.length) { console.log('No student entries to write.'); return 0; }
+
+  let photoHits = 0;
+  const width   = headers.length;
+  const newRows = entries.map(e => {
+    const photo = photoMap.get(normalizeName(e.name)) || '';
+    if (photo) photoHits++;
+    const row = new Array(width).fill('');
+    row[dateCol]  = e.date;
+    row[shiftCol] = e.shift;
+    row[roleCol]  = STUDENT_ROLE;
+    row[nameCol]  = e.name;
+    if (titleCol >= 0) row[titleCol] = e.title || '';
+    if (photoCol >= 0) row[photoCol] = photo;
+    if (notesCol >= 0) row[notesCol] = e.notes || '';
+    return row;
   });
 
-  console.log(`Updated photo_url for ${matched} student row(s).`);
-  return matched;
-}
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: ROSTER_TAB,
+    valueInputOption: 'RAW',
+    requestBody: { values: newRows },
+  });
 
-function colToLetter(idx) {
-  let letter = '';
-  let n = idx;
-  while (n >= 0) {
-    letter = String.fromCharCode(65 + (n % 26)) + letter;
-    n = Math.floor(n / 26) - 1;
-  }
-  return letter;
+  console.log(`Wrote ${newRows.length} student row(s) (${photoHits} with photo_url).`);
+  return newRows.length;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const spreadsheetId = process.env.CANONICAL_SHEET_ID;
-  if (!spreadsheetId)
+  if (!process.env.CANONICAL_SHEET_ID)
     throw new Error('CANONICAL_SHEET_ID env var is required.');
+  if (!process.env.STUDENT_SCHEDULE_SHEET_ID)
+    throw new Error('STUDENT_SCHEDULE_SHEET_ID env var is required.');
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON)
     throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
-  const students = await fetchStudentPhotos();
-  console.log(`\nStudents found: ${students.length}`);
-  for (const s of students) console.log(`  ${s.name}: ${s.photo_url}`);
+  const auth = await getAuth();
 
-  if (!students.length) {
-    console.warn('No student data extracted — sheet will not be modified.');
-    process.exit(0);
-  }
+  // Run schedule fetch and photo scrape concurrently.
+  const [entries, photoMap] = await Promise.all([
+    fetchStudentSchedule(auth),
+    fetchStudentPhotos().catch(err => {
+      console.warn('Photo scrape failed (continuing without photos):', err.message);
+      return new Map();
+    }),
+  ]);
 
-  const sheets = await getSheetsClient();
-  const n = await updateStudentPhotos(sheets, spreadsheetId, students);
-  console.log(`\nDone. ${n} student photo URL(s) written to sheet.`);
+  console.log(`\nSchedule entries: ${entries.length}, photos found: ${photoMap.size}`);
+
+  const n = await writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photoMap);
+  console.log(`\nDone. ${n} student row(s) written to canonical sheet.`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });
