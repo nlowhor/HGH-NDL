@@ -260,10 +260,24 @@ async function fetchStudentPhotos() {
       console.log('Cookie dialog dismissed.');
     } catch (_) { /* no popup, continue */ }
 
-    // Wait for gallery cards to render.
+    // Wait for gallery cards to render, then scroll to trigger lazy-loading.
     await page.waitForSelector('img', { timeout: 15000 }).catch(() => {});
-    await new Promise(r => setTimeout(r, 3000));
-    await page.screenshot({ path: 'airtable-debug.png', fullPage: false });
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Scroll through the full page in steps so lazy-loaded cards appear.
+    await page.evaluate(async () => {
+      const delay = ms => new Promise(r => setTimeout(r, ms));
+      const scrollable = document.scrollingElement || document.body;
+      const step = window.innerHeight * 0.8;
+      while (scrollable.scrollTop + window.innerHeight < scrollable.scrollHeight) {
+        scrollable.scrollTop += step;
+        await delay(600);
+      }
+      scrollable.scrollTop = 0; // scroll back to top
+      await delay(500);
+    });
+    await new Promise(r => setTimeout(r, 1500));
+    await page.screenshot({ path: 'airtable-debug.png', fullPage: true });
 
     // Strategy 1: intercept API payloads.
     const photos = extractPhotosFromPayloads(apiPayloads);
