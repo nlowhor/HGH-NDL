@@ -31,6 +31,9 @@ jobs:
         env:
           CANONICAL_SHEET_ID:          ${{ secrets.CANONICAL_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          # Optional: set to a specific Drive folder ID to override the
+          # auto-detected parent folder of the sheet.
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
         run: node index.js
 
       - name: Upload debug screenshot

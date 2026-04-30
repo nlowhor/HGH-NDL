@@ -8,6 +8,8 @@
  *   - getschedule: all shifts with dates, times, names, and assigned staff IDs
  *
  * Maps the results and writes resident shift rows to the canonical Google Sheet.
+ * Also looks up resident headshots from the Google Drive folder that contains
+ * the sheet (or from DRIVE_FOLDER_ID if set) and populates photo_url.
  *
  * Runs in GitHub Actions on a daily schedule. Can also be run locally:
  *   CANONICAL_SHEET_ID=... GOOGLE_SERVICE_ACCOUNT_JSON='...' node index.js
@@ -52,6 +54,19 @@ function pgyLabel(pgyStr) {
   return m ? `R${m[1]}` : '';
 }
 
+// Normalise a name for fuzzy matching: strip extension, replace separators,
+// lowercase, sort words so "Smith, John" matches "John Smith".
+function normalizeName(s) {
+  return s
+    .replace(/\.[^.]+$/, '')          // remove file extension
+    .replace(/[_,\-]+/g, ' ')         // separators → spaces
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .sort()
+    .join(' ');
+}
+
 // ── Medrez API calls ──────────────────────────────────────────────────────────
 
 async function fetchMedrezData() {
@@ -77,7 +92,6 @@ async function fetchMedrezData() {
       ]);
     }
 
-    // Verify login succeeded
     const loggedIn = await page.$('a[href*="logout"]');
     if (!loggedIn) throw new Error('Login does not appear to have succeeded.');
     console.log('Logged in.');
@@ -115,7 +129,6 @@ async function fetchMedrezData() {
 function buildEntries(staffsData, schedData) {
   const year = medrezYear();
 
-  // Map: staffId → { name, title }
   const staffMap = {};
   for (const [id, s] of Object.entries(staffsData.staffs || {})) {
     const name = (s.staff_name?.str || '').trim();
@@ -146,24 +159,84 @@ function buildEntries(staffsData, schedData) {
     }
   }
 
-  // Sort by date then name for deterministic sheet order.
   entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
   console.log(`Shift entries parsed: ${entries.length}`);
   return entries;
 }
 
-// ── Google Sheets ─────────────────────────────────────────────────────────────
+// ── Google Drive photo lookup ─────────────────────────────────────────────────
 
-async function getSheetsClient() {
-  const key  = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-  const auth = new google.auth.GoogleAuth({
-    credentials: key,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
-  return google.sheets({ version: 'v4', auth });
+// Returns a map of normalised name → Drive thumbnail URL for every image file
+// found in the folder that contains the sheet (or DRIVE_FOLDER_ID if provided).
+async function fetchDrivePhotos(auth, spreadsheetId) {
+  const drive = google.drive({ version: 'v3', auth });
+
+  // Find the parent folder of the sheet (unless overridden).
+  let folderId = process.env.DRIVE_FOLDER_ID;
+  if (!folderId) {
+    console.log('Looking up parent folder of the sheet…');
+    const meta = await drive.files.get({
+      fileId: spreadsheetId,
+      fields: 'parents',
+    });
+    const parents = meta.data.parents || [];
+    if (!parents.length) {
+      console.warn('Sheet has no parent folder — skipping Drive photo lookup.');
+      return {};
+    }
+    folderId = parents[0];
+    console.log(`Parent folder ID: ${folderId}`);
+  } else {
+    console.log(`Using DRIVE_FOLDER_ID: ${folderId}`);
+  }
+
+  // List image files in the folder.
+  const imageTypes = [
+    'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic',
+  ];
+  const mimeQuery = imageTypes.map(t => `mimeType='${t}'`).join(' or ');
+  const query = `'${folderId}' in parents and (${mimeQuery}) and trashed=false`;
+
+  const files = [];
+  let pageToken;
+  do {
+    const res = await drive.files.list({
+      q: query,
+      fields: 'nextPageToken, files(id, name)',
+      pageSize: 200,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    files.push(...(res.data.files || []));
+    pageToken = res.data.nextPageToken;
+  } while (pageToken);
+
+  console.log(`Found ${files.length} image file(s) in Drive folder.`);
+
+  // Build normalised-name → thumbnail URL map.
+  const photoMap = {};
+  for (const f of files) {
+    const key = normalizeName(f.name);
+    photoMap[key] = `https://drive.google.com/thumbnail?id=${f.id}&sz=w400`;
+  }
+  return photoMap;
 }
 
-async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
+// ── Google API clients ────────────────────────────────────────────────────────
+
+async function getAuth() {
+  const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  return new google.auth.GoogleAuth({
+    credentials: key,
+    scopes: [
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive.readonly',
+    ],
+  });
+}
+
+// ── Google Sheets write ───────────────────────────────────────────────────────
+
+async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos) {
   // Read header row.
   const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -185,25 +258,24 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
   const photoCol = headers.indexOf('photo_url');
   const notesCol = headers.indexOf('notes');
 
-  // Read all rows to find existing resident rows.
+  // Read all rows; preserve any photo_url already in the sheet for residents
+  // (e.g. manually entered URLs that the Drive lookup wouldn't cover).
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows   = allRes.data.values || [];
 
-  // Collect 1-based row indices of resident rows (skip header at row 1).
-  // Also capture any existing photo_url values so they survive the rewrite.
-  const toDelete = [];
-  const savedPhotos = {}; // name (lowercase) → photo_url
+  const toDelete    = [];
+  const savedPhotos = {}; // normalised name → photo_url
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === RESIDENT_ROLE) {
       toDelete.push(i + 1);
       if (photoCol >= 0) {
-        const name  = String(rows[i][nameCol] || '').trim().toLowerCase();
+        const name  = normalizeName(String(rows[i][nameCol] || ''));
         const photo = String(rows[i][photoCol] || '').trim();
         if (name && photo) savedPhotos[name] = photo;
       }
     }
   }
-  console.log(`Preserved photo_url for ${Object.keys(savedPhotos).length} resident(s).`);
+  console.log(`Preserved photo_url for ${Object.keys(savedPhotos).length} resident(s) already in sheet.`);
 
   // Delete existing resident rows bottom-up.
   if (toDelete.length) {
@@ -225,15 +297,24 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
 
   if (!entries.length) { console.log('No entries to append.'); return 0; }
 
+  // Photo priority: Drive folder match > previously saved in sheet.
+  const resolvePhoto = (name) => {
+    const key = normalizeName(name);
+    return drivePhotos[key] || savedPhotos[key] || '';
+  };
+
+  let photoHits = 0;
   const width   = headers.length;
   const newRows = entries.map(e => {
-    const row = new Array(width).fill('');
+    const row   = new Array(width).fill('');
+    const photo = resolvePhoto(e.name);
+    if (photo) photoHits++;
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = RESIDENT_ROLE;
     row[nameCol]  = e.name;
     if (titleCol >= 0) row[titleCol] = e.title || '';
-    if (photoCol >= 0) row[photoCol] = e.photo_url || savedPhotos[e.name.toLowerCase()] || '';
+    if (photoCol >= 0) row[photoCol] = photo;
     if (notesCol >= 0) row[notesCol] = e.notes || '';
     return row;
   });
@@ -245,7 +326,7 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
     requestBody: { values: newRows },
   });
 
-  console.log(`Appended ${newRows.length} resident shift rows.`);
+  console.log(`Appended ${newRows.length} resident shift rows (${photoHits} with photo_url).`);
   return newRows.length;
 }
 
@@ -266,8 +347,19 @@ async function main() {
     process.exit(1);
   }
 
-  const sheets = await getSheetsClient();
-  const n = await writeResidentsToSheet(sheets, spreadsheetId, entries);
+  const auth   = await getAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  let drivePhotos = {};
+  try {
+    drivePhotos = await fetchDrivePhotos(auth, spreadsheetId);
+    const matched = Object.keys(drivePhotos).length;
+    console.log(`Drive photo lookup: ${matched} image(s) indexed.`);
+  } catch (err) {
+    console.warn('Drive photo lookup failed (photos will fall back to saved values):', err.message);
+  }
+
+  const n = await writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos);
   console.log(`\nDone. ${n} resident shift rows written to sheet.`);
 }
 
