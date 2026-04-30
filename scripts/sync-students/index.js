@@ -57,6 +57,10 @@ const SHIFT_LABEL_MAP = {
 // Labels that occupy a shift-type cell but are NOT student assignments.
 const SKIP_LABEL = /^(orientation|bridge|conference|lecture|holiday|off|em |bup$)/i;
 
+// Slot placeholders or affiliation labels that appear in the name column but
+// are not real student names (e.g. "Student 2", "UCSF 1").
+const SKIP_NAME = /^(student|ucsf|ms|slot|resident|attending)\s*\d*$/i;
+
 const DAY_NAMES = ['MON', 'TUES', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
 // Parse a cell value into an ISO date string, given a hint year.
@@ -156,6 +160,7 @@ function parseScheduleTab(rows, tabName) {
         if (!rawLabel || !rawName) continue;
         if (SKIP_LABEL.test(rawLabel)) continue;
         if (SKIP_LABEL.test(rawName))  continue;
+        if (SKIP_NAME.test(rawName))   continue;
 
         const mapped = SHIFT_LABEL_MAP[rawLabel.toUpperCase()];
         if (!mapped) continue;
@@ -190,11 +195,15 @@ async function fetchStudentSchedule(auth) {
 
   // List all tabs.
   const meta = await sheets.spreadsheets.get({ spreadsheetId: scheduleSheetId });
-  const tabs  = meta.data.sheets.map(s => ({
+  const allTabs = meta.data.sheets.map(s => ({
     id:    s.properties.sheetId,
     title: s.properties.title,
   }));
-  console.log(`Schedule sheet has ${tabs.length} tab(s): ${tabs.map(t => t.title).join(', ')}`);
+  console.log(`Schedule sheet has ${allTabs.length} tab(s): ${allTabs.map(t => t.title).join(', ')}`);
+
+  // Only parse tabs that look like rotation blocks.
+  const tabs = allTabs.filter(t => /block/i.test(t.title));
+  console.log(`Rotation block tabs: ${tabs.map(t => t.title).join(', ')}`);
 
   // Date window.
   const today = new Date();
@@ -325,8 +334,10 @@ async function fetchStudentPhotos() {
           .map(n => n.textContent.trim())
           .filter(t => t && /^[A-Za-z]/.test(t) && t.length > 1);
 
-        const name = allText.find(t => /^[A-Za-z]+ [A-Za-z]/.test(t))
-          || card.textContent.trim().split('\n').map(s => s.trim()).find(s => /^[A-Za-z]+ [A-Za-z]/.test(s));
+        // Accept single last-names too (e.g. "Arellano"), not just "First Last".
+        const name = allText.find(t => /^[A-Za-z][A-Za-z\s\-']+$/.test(t) && t.length > 2)
+          || card.textContent.trim().split('\n').map(s => s.trim())
+               .find(s => /^[A-Za-z][A-Za-z\s\-']+$/.test(s) && s.length > 2);
 
         if (name && img.src) out[name] = img.src;
       }
@@ -359,19 +370,37 @@ function extractPhotosFromPayloads(payloads) {
       []
     );
     if (!records.length) continue;
+
+    console.log(`  Payload has ${records.length} record(s). Inspecting first record fields…`);
+    const sampleFields = records[0]?.cellValuesByColumnId || records[0]?.fields || records[0];
+    if (sampleFields && typeof sampleFields === 'object') {
+      for (const [k, v] of Object.entries(sampleFields)) {
+        console.log(`    field ${k}: ${JSON.stringify(v)?.slice(0, 120)}`);
+      }
+    }
+
     for (const record of records) {
       const fields = record.cellValuesByColumnId || record.fields || record;
       if (typeof fields !== 'object') continue;
       const values = Object.values(fields);
-      const nameField = values.find(v => typeof v === 'string' && /^[A-Za-z]+ [A-Za-z]/.test(v));
+
+      // Accept any string field that looks like a name (1+ words, letters only).
+      // Intentionally broad — single last-names like "Arellano" are valid.
+      const nameField = values.find(v =>
+        typeof v === 'string' && /^[A-Za-z][A-Za-z\s\-',.]+$/.test(v.trim()) && v.trim().length > 1
+      );
       if (!nameField) continue;
+
       let url = '';
       for (const v of values) {
         if (typeof v === 'string' && /^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(v)) { url = v; break; }
         if (Array.isArray(v) && v[0]?.thumbnails?.large?.url) { url = v[0].thumbnails.large.url; break; }
         if (Array.isArray(v) && v[0]?.url) { url = v[0].url; break; }
       }
-      if (url) photos.set(normalizeName(nameField), url);
+      if (url) {
+        console.log(`  Photo matched: "${nameField}" → ${url.slice(0, 80)}`);
+        photos.set(normalizeName(nameField), url);
+      }
     }
     if (photos.size) break;
   }
