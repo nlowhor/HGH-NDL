@@ -1,0 +1,14 @@
+{
+  "name": "hgh-sync-students",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scrapes the Airtable student roster view and writes photo URLs to the canonical Google Sheet.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0",
+    "puppeteer": "^22.0.0"
+  }
+}
