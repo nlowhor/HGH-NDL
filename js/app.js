@@ -41,7 +41,7 @@ function el(tag, props = {}, children = []) {
     else if (v != null) n.setAttribute(k, v);
   }
   for (const c of [].concat(children)) {
-    if (c == null) continue;
+    if (c == null || c === "") continue;
     n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
   }
   return n;

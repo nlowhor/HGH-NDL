@@ -42,7 +42,7 @@ export function parseCsv(text) {
   for (let r = 1; r < rows.length; r++) {
     const cells = rows[r];
     // Skip fully empty lines
-    if (cells.length === 1 && cells[0].trim() === "") continue;
+    if (cells.every((c) => c.trim() === "")) continue;
     const obj = {};
     for (let c = 0; c < headers.length; c++) {
       obj[headers[c]] = (cells[c] ?? "").trim();
