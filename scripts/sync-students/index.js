@@ -252,6 +252,16 @@ async function fetchStudentPhotos() {
   try {
     console.log('Navigating to Airtable shared view…');
     await page.goto(AIRTABLE_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
+
+    // Dismiss cookie consent popup if present.
+    try {
+      await page.waitForSelector('[aria-label="Close"], button[data-testid="close-button"], .cookie-dialog button', { timeout: 5000 });
+      await page.click('[aria-label="Close"], button[data-testid="close-button"], .cookie-dialog button');
+      console.log('Cookie dialog dismissed.');
+    } catch (_) { /* no popup, continue */ }
+
+    // Wait for gallery cards to render.
+    await page.waitForSelector('img', { timeout: 15000 }).catch(() => {});
     await new Promise(r => setTimeout(r, 3000));
     await page.screenshot({ path: 'airtable-debug.png', fullPage: false });
 
@@ -262,30 +272,59 @@ async function fetchStudentPhotos() {
       return photos;
     }
 
-    // Strategy 2: DOM extraction.
+    // Strategy 2: gallery-view DOM extraction.
+    // Each card in a gallery has an attachment image and a primary-field text node.
     const domPhotos = await page.evaluate(() => {
       const out = {};
-      const rows = Array.from(document.querySelectorAll('[data-rowindex], tr'));
-      for (const row of rows) {
-        const imgs = Array.from(row.querySelectorAll('img[src]'))
-          .filter(img => !/brand|logo|icon/i.test(img.src));
-        if (!imgs.length) continue;
-        const texts = Array.from(row.querySelectorAll('[data-columnindex="0"], .cell-wrapper, td'))
-          .map(el => el.textContent.trim())
-          .filter(t => t && /^[A-Za-z]+ [A-Za-z]/.test(t));
-        if (!texts.length) continue;
-        out[texts[0]] = imgs[0].src;
+
+      // Airtable gallery cards are typically direct children of a gallery container.
+      // Try multiple selector patterns across Airtable versions.
+      const cardSelectors = [
+        '[data-testid="gallery-card"]',
+        '.galleryCard',
+        '[class*="galleryCard"]',
+        '[class*="gallery-card"]',
+        '[class*="GalleryCard"]',
+      ];
+
+      let cards = [];
+      for (const sel of cardSelectors) {
+        cards = Array.from(document.querySelectorAll(sel));
+        if (cards.length) break;
+      }
+
+      // Fallback: any element containing both an <img> and visible text.
+      if (!cards.length) {
+        cards = Array.from(document.querySelectorAll('li, article, [role="listitem"]'))
+          .filter(el => el.querySelector('img'));
+      }
+
+      for (const card of cards) {
+        const img = card.querySelector('img[src]');
+        if (!img || /brand|logo|icon|avatar-default/i.test(img.src)) continue;
+
+        // Primary field is usually the first non-empty text node in the card.
+        const allText = Array.from(card.querySelectorAll('*'))
+          .map(el => el.childNodes)
+          .reduce((a, b) => [...a, ...b], [])
+          .filter(n => n.nodeType === 3) // text nodes only
+          .map(n => n.textContent.trim())
+          .filter(t => t && /^[A-Za-z]/.test(t) && t.length > 1);
+
+        const name = allText.find(t => /^[A-Za-z]+ [A-Za-z]/.test(t))
+          || card.textContent.trim().split('\n').map(s => s.trim()).find(s => /^[A-Za-z]+ [A-Za-z]/.test(s));
+
+        if (name && img.src) out[name] = img.src;
       }
       return out;
     });
 
     const domMap = new Map(Object.entries(domPhotos));
     if (domMap.size) {
-      console.log(`Airtable: ${domMap.size} photo(s) from DOM.`);
+      console.log(`Airtable: ${domMap.size} photo(s) from gallery DOM.`);
       return domMap;
     }
 
-    const html = require('fs').readFileSync ? null : null;
     require('fs').writeFileSync('airtable-debug.html', await page.content());
     console.warn('Airtable: no photos found. Saved airtable-debug.html for inspection.');
     return new Map();
