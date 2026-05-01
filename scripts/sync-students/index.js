@@ -78,8 +78,9 @@ function parseDate(val, hintYear) {
 function yearFromTabName(name) {
   const m4 = name.match(/\b(20\d{2})\b/);
   if (m4) return parseInt(m4[1], 10);
-  const m2 = name.match(/\/(\d{2})\b/);
-  if (m2) return 2000 + parseInt(m2[1], 10);
+  // Use the LAST "/YY" so "5/31/26" yields 26, not 31.
+  const all = [...name.matchAll(/\/(\d{2})/g)];
+  if (all.length) return 2000 + parseInt(all[all.length - 1][1], 10);
   return null;
 }
 
@@ -219,8 +220,26 @@ async function fetchStudentPhotos() {
     const metaRes = await fetch(`${AIRTABLE_API}/meta/bases/${AIRTABLE_BASE_ID}/tables`, { headers });
     if (!metaRes.ok) throw new Error(`Airtable metadata API ${metaRes.status}: ${await metaRes.text()}`);
     const { tables } = await metaRes.json();
-    const table = tables.find(t => t.fields.some(f => f.type === 'multipleAttachments'));
-    if (!table) throw new Error('No table with attachment fields found. Set AIRTABLE_TABLE to the table name or ID.');
+    console.log(`Tables in base: ${tables.map(t => t.name).join(', ')}`);
+
+    const photoFieldNames = /photo|headshot|image|picture|portrait|pic\b/i;
+    const pdfFieldNames   = /^pdf$|^file$|^document$/i;
+
+    // Prefer a table with an attachment field that looks like headshots.
+    let table = tables.find(t =>
+      t.fields.some(f => f.type === 'multipleAttachments' && photoFieldNames.test(f.name))
+    );
+    // Fall back to a table with any attachment field that isn't named PDF/File/Document.
+    if (!table) {
+      table = tables.find(t =>
+        t.fields.some(f => f.type === 'multipleAttachments' && !pdfFieldNames.test(f.name))
+      );
+    }
+    if (!table) throw new Error(
+      `Could not auto-detect student photo table.\n` +
+      `Tables found: ${tables.map(t => t.name).join(', ')}\n` +
+      `Set AIRTABLE_TABLE secret to the exact table name or ID.`
+    );
     tableId = table.id;
     console.log(`Auto-discovered table: "${table.name}" (${tableId})`);
     console.log(`Fields: ${table.fields.map(f => `${f.name} (${f.type})`).join(', ')}`);
