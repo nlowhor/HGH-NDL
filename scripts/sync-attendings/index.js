@@ -675,30 +675,35 @@ async function scrapeFacultyPhotos(browser) {
 
   await page.close();
 
-  // Build normalized lookup maps: full-name key and last-name key.
-  const byFull = {};
-  const byLast = {};
+  // Build normalized lookup maps: full-name key, last-name key, and display name by last name.
+  const byFull       = {};
+  const byLast       = {};
+  const displayByLast = {}; // last name → "Caitlin Bailey" (no credential suffix)
   for (const [name, url] of Object.entries(photos)) {
     if (!url) continue;
     const full = normalizeName(name);
     const last = lastName(name);
     byFull[full] = url;
-    if (last && !byLast[last]) byLast[last] = url;
+    if (last && !byLast[last]) {
+      byLast[last] = url;
+      // Strip credential suffix for display ("Caitlin Bailey, MD" → "Caitlin Bailey").
+      displayByLast[last] = name.replace(CREDENTIAL_RE, '').replace(/[\s,;]+$/, '').replace(/\s+/g, ' ').trim();
+    }
   }
 
   console.log(`Faculty photos scraped: ${Object.keys(byFull).length} names, ${Object.keys(byLast).length} by last name`);
   if (Object.keys(byLast).length) {
     console.log('  Last names:', Object.keys(byLast).slice(0, 8).join(', '));
   }
-  return { byFull, byLast };
+  return { byFull, byLast, displayByLast };
 }
 
 // ── GitHub Pages photo persistence ───────────────────────────────────────────
 
-async function persistAttendingPhotos({ byFull, byLast }) {
+async function persistAttendingPhotos({ byFull, byLast, displayByLast }) {
   if (!process.env.GITHUB_TOKEN) {
     console.warn('GITHUB_TOKEN not set — skipping GitHub Pages photo persistence.');
-    return { byFull, byLast };
+    return { byFull, byLast, displayByLast };
   }
 
   const newFull = {};
@@ -725,7 +730,7 @@ async function persistAttendingPhotos({ byFull, byLast }) {
   }
 
   console.log(`Attending photos persisted: ${hits} stored, ${skipped} failed.`);
-  return { byFull: newFull, byLast: newLast };
+  return { byFull: newFull, byLast: newLast, displayByLast };
 }
 
 // ── Google API ────────────────────────────────────────────────────────────────
@@ -740,8 +745,16 @@ async function getAuth() {
 
 // ── Google Sheets write ───────────────────────────────────────────────────────
 
+// Shifts at these locations are not Highland shifts — exclude from the roster.
+const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO)\b/i;
+
 async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
-  const { byFull, byLast, savedPhotos } = photos;
+  const { byFull, byLast, displayByLast, savedPhotos } = photos;
+
+  // Filter out off-site shifts before touching the sheet.
+  const offsiteCount = entries.filter(e => OFFSITE_RE.test(e.shiftLabel || '')).length;
+  if (offsiteCount) console.log(`Filtered out ${offsiteCount} off-site entry(s) (San Leandro/Alameda/CHO).`);
+  entries = entries.filter(e => !OFFSITE_RE.test(e.shiftLabel || ''));
 
   const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -796,23 +809,31 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
 
   if (!entries.length) { console.log('No attending entries to append.'); return 0; }
 
-  // QGenda uses abbreviated names ("C. Bailey"); match primarily by last name.
+  // QGenda uses abbreviated names ("C. Bailey"); resolve to full name and photo by last name.
   const resolvePhoto = (name) => {
     const last = lastName(name);
     const full = normalizeName(name);
     return byFull[full] || byLast[last] || savedPhotos[full] || savedPhotos[last] || '';
   };
 
+  // Expand abbreviated QGenda name to full display name using faculty page data.
+  // "C. Bailey" → "Caitlin Bailey" if we have a last-name match; otherwise keep as-is.
+  const resolveDisplayName = (name) => {
+    const last = lastName(name);
+    return (displayByLast && displayByLast[last]) || name;
+  };
+
   let photoHits = 0;
   const width   = headers.length;
   const newRows = entries.map(e => {
-    const row   = new Array(width).fill('');
-    const photo = resolvePhoto(e.name);
+    const row         = new Array(width).fill('');
+    const photo       = resolvePhoto(e.name);
+    const displayName = resolveDisplayName(e.name);
     if (photo) photoHits++;
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = ATTENDING_ROLE;
-    row[nameCol]  = e.name;
+    row[nameCol]  = displayName;
     if (titleCol >= 0) row[titleCol] = '';
     if (photoCol >= 0) row[photoCol] = photo;
     if (notesCol >= 0) row[notesCol] = e.shiftLabel || '';
@@ -867,7 +888,8 @@ async function main() {
   const sheets = google.sheets({ version: 'v4', auth });
 
   const n = await writeAttendingsToSheet(sheets, spreadsheetId, entries, {
-    byFull: photos.byFull, byLast: photos.byLast, savedPhotos: {},
+    byFull: photos.byFull, byLast: photos.byLast,
+    displayByLast: photos.displayByLast || {}, savedPhotos: {},
   });
   console.log(`\nDone. ${n} attending shift rows written to sheet.`);
 }
