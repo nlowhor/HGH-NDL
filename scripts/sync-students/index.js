@@ -268,6 +268,12 @@ async function fetchStudentPhotos() {
       if (byFullName.size === 0 && byLastName.size === 0) {
         console.log('Airtable field names in first record:',
           Object.entries(fields).map(([k, v]) => `"${k}" (${Array.isArray(v) ? 'array' : typeof v})`).join(', '));
+        // Also log name-related field values to debug name extraction.
+        for (const [k, v] of Object.entries(fields)) {
+          if (/name/i.test(k)) {
+            console.log(`  name field "${k}":`, JSON.stringify(v).slice(0, 120));
+          }
+        }
       }
 
       // Extract photo URL from the first attachment field found.
@@ -299,37 +305,23 @@ async function fetchStudentPhotos() {
 
 // Extract a clean student name from an Airtable record's fields object.
 function extractName(fields) {
-  // Strategy 0: explicit first/last name fields → "First Last"
-  // Matches: "First Name", "FirstName", "first_name", "fname", "first",
-  //          "Last Name",  "LastName",  "last_name",  "lname", "last", "surname"
-  let firstName = null, lastName = null;
-  for (const [k, v] of Object.entries(fields)) {
-    if (typeof v !== 'string' || !v.trim()) continue;
-    if (/^(first[\s_]?name|fname|first)$/i.test(k))                firstName = v.trim();
-    if (/^(last[\s_]?name|lname|last|surname|family[\s_]?name)$/i.test(k)) lastName = v.trim();
+  // Strategy 1: "Name (from Student)" lookup array — most reliable when present.
+  const fromStudent = fields['Name (from Student)'];
+  if (Array.isArray(fromStudent) && typeof fromStudent[0] === 'string' && fromStudent[0].trim()) {
+    return fromStudent[0].trim();
   }
-  if (firstName && lastName) return `${firstName} ${lastName}`;
-  if (firstName || lastName) return (firstName || lastName);
 
-  // Strategy 1: lookup field — "Name (from Student)" or similar lookup.
-  for (const [k, v] of Object.entries(fields)) {
-    if (/name.*from|from.*name/i.test(k) && Array.isArray(v) && typeof v[0] === 'string') {
-      return v[0].trim();
-    }
+  // Strategy 2: "Name" formula field — strip trailing phone number.
+  const nameFormula = fields['Name'];
+  if (typeof nameFormula === 'string') {
+    const clean = nameFormula.replace(/\s*\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}.*$/, '').trim();
+    if (clean.length > 1) return clean;
   }
-  // Strategy 2: formula "Name" field — strip trailing phone number pattern.
-  for (const [k, v] of Object.entries(fields)) {
-    if (/^name$/i.test(k) && typeof v === 'string') {
-      const clean = v.replace(/\s*\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}.*$/, '').trim();
-      if (clean.length > 1) return clean;
-    }
-  }
-  // Strategy 3: any text field whose key contains "name" but not email/phone/cell.
-  for (const [k, v] of Object.entries(fields)) {
-    if (/name/i.test(k) && !/email|phone|cell|contact/i.test(k) && typeof v === 'string' && v.trim().length > 1) {
-      return v.trim();
-    }
-  }
+
+  // Strategy 3: "Preferred Name (optional)" if filled in.
+  const preferred = fields['Preferred Name (optional)'];
+  if (typeof preferred === 'string' && preferred.trim().length > 1) return preferred.trim();
+
   return null;
 }
 
