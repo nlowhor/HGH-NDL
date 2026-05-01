@@ -33,4 +33,7 @@ jobs:
           STUDENT_SCHEDULE_SHEET_ID:    ${{ secrets.STUDENT_SCHEDULE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON:  ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           AIRTABLE_API_KEY:             ${{ secrets.AIRTABLE_API_KEY }}
+          # Optional: set to table name or ID to skip metadata API discovery.
+          # Required if your token lacks the schema.bases:read scope.
+          AIRTABLE_TABLE:               ${{ secrets.AIRTABLE_TABLE }}
         run: node index.js

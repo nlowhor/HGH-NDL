@@ -93,12 +93,22 @@ function parseScheduleTab(rows, tabName) {
   for (const row of rows) {
     for (let c = 0; c < row.length - 1; c++) {
       if (/rotation start date/i.test(String(row[c] || ''))) {
-        const d = parseDate(String(row[c + 1] || ''), hintYear);
-        if (d) { rotationYear = parseInt(d.slice(0, 4), 10); break; }
+        const raw = String(row[c + 1] || '');
+        const d   = parseDate(raw, hintYear);
+        if (d) {
+          const parsedYear = parseInt(d.slice(0, 4), 10);
+          // Prefer hintYear from tab name when the cell year conflicts —
+          // "5/4/25" in a tab named "#Block 1 (5/4-5/31/26)" likely means
+          // the cell has a stale year; the tab name is more reliable.
+          rotationYear = hintYear || parsedYear;
+          console.log(`  Rotation start date raw="${raw}" → parsed year ${parsedYear}, using ${rotationYear}`);
+        }
+        break;
       }
     }
     if (rotationYear) break;
   }
+  console.log(`  rotationYear for "${tabName}": ${rotationYear}`);
 
   let i = 0;
   while (i < rows.length) {
@@ -200,24 +210,29 @@ async function fetchStudentPhotos() {
 
   const headers = { Authorization: `Bearer ${apiKey}` };
 
-  // Discover the table that has attachment fields (headshots).
-  console.log('\nFetching Airtable table metadata…');
-  const metaRes = await fetch(`${AIRTABLE_API}/meta/bases/${AIRTABLE_BASE_ID}/tables`, { headers });
-  if (!metaRes.ok) throw new Error(`Airtable metadata API ${metaRes.status}: ${await metaRes.text()}`);
-  const { tables } = await metaRes.json();
-
-  const table = tables.find(t => t.fields.some(f => f.type === 'multipleAttachments'));
-  if (!table) throw new Error('No table with attachment fields found in Airtable base.');
-  console.log(`Using table: "${table.name}" (${table.id})`);
-
-  // Log field names for debugging.
-  console.log(`Fields: ${table.fields.map(f => `${f.name} (${f.type})`).join(', ')}`);
+  // Use AIRTABLE_TABLE env var if set (name or ID), otherwise auto-discover
+  // via metadata API (requires schema.bases:read scope on the token).
+  let tableId = process.env.AIRTABLE_TABLE;
+  if (!tableId) {
+    console.log('AIRTABLE_TABLE not set — fetching metadata to discover table…');
+    console.log('(Add schema.bases:read scope to your token, or set AIRTABLE_TABLE secret to skip this.)');
+    const metaRes = await fetch(`${AIRTABLE_API}/meta/bases/${AIRTABLE_BASE_ID}/tables`, { headers });
+    if (!metaRes.ok) throw new Error(`Airtable metadata API ${metaRes.status}: ${await metaRes.text()}`);
+    const { tables } = await metaRes.json();
+    const table = tables.find(t => t.fields.some(f => f.type === 'multipleAttachments'));
+    if (!table) throw new Error('No table with attachment fields found. Set AIRTABLE_TABLE to the table name or ID.');
+    tableId = table.id;
+    console.log(`Auto-discovered table: "${table.name}" (${tableId})`);
+    console.log(`Fields: ${table.fields.map(f => `${f.name} (${f.type})`).join(', ')}`);
+  } else {
+    console.log(`Using table from AIRTABLE_TABLE env var: ${tableId}`);
+  }
 
   // Fetch all records, handling pagination.
   const photos = new Map();
   let offset;
   do {
-    const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${table.id}`);
+    const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableId)}`);
     if (offset) url.searchParams.set('offset', offset);
 
     const res = await fetch(url.toString(), { headers });
