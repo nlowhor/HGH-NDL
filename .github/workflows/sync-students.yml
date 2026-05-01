@@ -26,6 +26,11 @@ jobs:
         working-directory: scripts/sync-students
         run: npm install
 
+      - name: Show service account email
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: echo "$GOOGLE_SERVICE_ACCOUNT_JSON" | node -e "process.stdout.write(require('fs').readFileSync('/dev/stdin','utf8'))" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log('SA email:', JSON.parse(d).client_email)"
+
       - name: Run student sync
         working-directory: scripts/sync-students
         env:
