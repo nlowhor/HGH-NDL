@@ -264,6 +264,12 @@ async function fetchStudentPhotos() {
     for (const record of data.records || []) {
       const fields = record.fields;
 
+      // Log field names from the first record so we can see what Airtable exposes.
+      if (byFullName.size === 0 && byLastName.size === 0) {
+        console.log('Airtable field names in first record:',
+          Object.entries(fields).map(([k, v]) => `"${k}" (${Array.isArray(v) ? 'array' : typeof v})`).join(', '));
+      }
+
       // Extract photo URL from the first attachment field found.
       const photoEntry = Object.entries(fields).find(([, v]) => Array.isArray(v) && v[0]?.url);
       if (!photoEntry) continue;
@@ -293,11 +299,14 @@ async function fetchStudentPhotos() {
 
 // Extract a clean student name from an Airtable record's fields object.
 function extractName(fields) {
-  // Strategy 0: explicit "First Name" + "Last Name" fields → "First Last"
+  // Strategy 0: explicit first/last name fields → "First Last"
+  // Matches: "First Name", "FirstName", "first_name", "fname", "first",
+  //          "Last Name",  "LastName",  "last_name",  "lname", "last", "surname"
   let firstName = null, lastName = null;
   for (const [k, v] of Object.entries(fields)) {
-    if (/^first\s*name$/i.test(k) && typeof v === 'string' && v.trim()) firstName = v.trim();
-    if (/^last\s*name$/i.test(k)  && typeof v === 'string' && v.trim()) lastName  = v.trim();
+    if (typeof v !== 'string' || !v.trim()) continue;
+    if (/^(first[\s_]?name|fname|first)$/i.test(k))                firstName = v.trim();
+    if (/^(last[\s_]?name|lname|last|surname|family[\s_]?name)$/i.test(k)) lastName = v.trim();
   }
   if (firstName && lastName) return `${firstName} ${lastName}`;
   if (firstName || lastName) return (firstName || lastName);
