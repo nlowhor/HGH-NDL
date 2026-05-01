@@ -58,11 +58,7 @@ export async function loadAllRosters({ demoMode = false } = {}) {
   const hasLiveSource =
     !!src.sheetCsvUrl || !!src.docPubUrl || (src.websites && src.websites.length > 0);
 
-  if (src.sheetCsvUrl) await tryOne("Google Sheet", () => fetchSheetRoster(src.sheetCsvUrl).then(rows => {
-    const dates = [...new Set(rows.map(r => r.date))].sort();
-    console.log(`[sheet] fetched ${rows.length} total rows; date range: ${dates[0] ?? "none"} – ${dates[dates.length - 1] ?? "none"}`);
-    return rows;
-  }));
+  if (src.sheetCsvUrl) await tryOne("Google Sheet", () => fetchSheetRoster(src.sheetCsvUrl));
   if (src.docPubUrl)   await tryOne("Google Doc",   () => fetchDocRoster(src.docPubUrl));
   for (const site of src.websites || []) {
     await tryOne(`Website: ${site.url}`, () => fetchWebsiteRoster(site));

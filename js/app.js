@@ -163,19 +163,7 @@ async function reload() {
     state.rows = rows;
     state.diagnostics = diagnostics;
 
-    const students = rows.filter(r => r.role === "student");
-    const current = shiftAt(new Date());
-    console.log("[debug] current shift:", current);
-    console.log("[debug] student rows loaded:", students.length);
-    if (students.length) {
-      const dates = [...new Set(students.map(r => r.date))].sort();
-      const shifts = [...new Set(students.map(r => r.shift))];
-      console.log("[debug] student dates (first 10):", dates.slice(0, 10));
-      console.log("[debug] student shifts:", shifts);
-      const today = students.filter(r => r.date === current.date);
-      console.log("[debug] students on current date:", today.length, today.map(r => `${r.name}/${r.shift}`));
-    }
-  } catch (err) {
+} catch (err) {
     state.diagnostics = [{ name: "loader", ok: false, error: String(err) }];
   }
   render();
