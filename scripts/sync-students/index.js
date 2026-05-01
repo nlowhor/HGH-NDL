@@ -214,6 +214,7 @@ async function fetchStudentPhotos() {
   // Use AIRTABLE_TABLE env var if set (name or ID), otherwise auto-discover
   // via metadata API (requires schema.bases:read scope on the token).
   let tableId = process.env.AIRTABLE_TABLE;
+  let studentRosterTableId = null;
   if (!tableId) {
     console.log('AIRTABLE_TABLE not set — fetching metadata to discover table…');
     console.log('(Add schema.bases:read scope to your token, or set AIRTABLE_TABLE secret to skip this.)');
@@ -243,8 +244,43 @@ async function fetchStudentPhotos() {
     tableId = table.id;
     console.log(`Auto-discovered table: "${table.name}" (${tableId})`);
     console.log(`Fields: ${table.fields.map(f => `${f.name} (${f.type})`).join(', ')}`);
+
+    // Also find the Student Roster table so we can join full names via linked records.
+    const rosterTable = tables.find(t => /^student.roster$/i.test(t.name));
+    if (rosterTable) {
+      studentRosterTableId = rosterTable.id;
+      console.log(`Found Student Roster table: "${rosterTable.name}" (${studentRosterTableId})`);
+    }
   } else {
     console.log(`Using table from AIRTABLE_TABLE env var: ${tableId}`);
+  }
+
+  // Fetch Student Roster records to build recordId → full name map.
+  // Welcome Form records link to Student Roster via the "Student" field.
+  const rosterById = new Map(); // Airtable record ID → full name string
+  if (studentRosterTableId) {
+    console.log('Fetching Student Roster for full name lookup…');
+    let rosterOffset;
+    let loggedRoster = false;
+    do {
+      const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${encodeURIComponent(studentRosterTableId)}`);
+      if (rosterOffset) url.searchParams.set('offset', rosterOffset);
+      const res = await fetch(url.toString(), { headers });
+      if (!res.ok) { console.warn('Student Roster fetch failed:', res.status); break; }
+      const data = await res.json();
+      for (const record of data.records || []) {
+        if (!loggedRoster) {
+          console.log('Student Roster first record fields:',
+            Object.entries(record.fields).slice(0, 12)
+              .map(([k, v]) => `"${k}": ${JSON.stringify(v).slice(0, 60)}`).join(', '));
+          loggedRoster = true;
+        }
+        const name = extractRosterName(record.fields);
+        if (name) rosterById.set(record.id, name);
+      }
+      rosterOffset = data.offset;
+    } while (rosterOffset);
+    console.log(`Student Roster: ${rosterById.size} name(s) loaded.`);
   }
 
   // Fetch all records, handling pagination.
@@ -281,11 +317,10 @@ async function fetchStudentPhotos() {
       if (!photoEntry) continue;
       const photoUrl = photoEntry[1][0].thumbnails?.large?.url || photoEntry[1][0].url;
 
-      // Extract name using several strategies in priority order:
-      // 1. Lookup field named "Name (from Student)" → array of strings
-      // 2. Formula "Name" field → strip embedded phone number
-      // 3. Any singleLineText field whose key contains "name"
-      const name = extractName(fields);
+      // Extract name: prefer Student Roster lookup (full name via linked record),
+      // then fall back to Welcome Form field strategies.
+      const linkedStudentId = Array.isArray(fields['Student']) ? fields['Student'][0] : null;
+      const name = (linkedStudentId && rosterById.get(linkedStudentId)) || extractName(fields);
       if (!name) continue;
 
       console.log(`  ${name} → ${photoUrl.slice(0, 80)}`);
@@ -301,6 +336,21 @@ async function fetchStudentPhotos() {
 
   console.log(`Airtable: ${byFullName.size} photo(s) fetched.`);
   return { byFullName, byLastName };
+}
+
+// Extract full name from a Student Roster record (primary field is usually the name).
+function extractRosterName(fields) {
+  // Try "Name", "Student Name", "Full Name" — common primary field names.
+  for (const [k, v] of Object.entries(fields)) {
+    if (/^(student\s+)?name$|^full\s+name$/i.test(k) && typeof v === 'string' && v.trim().length > 2) {
+      return v.trim();
+    }
+  }
+  // Fall back: first string field that looks like a name (has a space, no digits).
+  for (const [, v] of Object.values(fields).map((v, i) => [i, v])) {
+    if (typeof v === 'string' && /^[A-Za-z]+ [A-Za-z]/.test(v.trim())) return v.trim();
+  }
+  return null;
 }
 
 // Extract a clean student name from an Airtable record's fields object.
