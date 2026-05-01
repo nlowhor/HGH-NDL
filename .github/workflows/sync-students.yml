@@ -36,4 +36,6 @@ jobs:
           # Optional: set to table name or ID to skip metadata API discovery.
           # Required if your token lacks the schema.bases:read scope.
           AIRTABLE_TABLE:               ${{ secrets.AIRTABLE_TABLE }}
+          # Drive folder for persistent headshot storage (avoids Airtable CDN expiry).
+          DRIVE_FOLDER_ID:              ${{ secrets.DRIVE_FOLDER_ID }}
         run: node index.js
