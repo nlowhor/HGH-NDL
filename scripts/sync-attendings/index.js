@@ -220,66 +220,71 @@ function parseQGendaTables(tables, fromDate, toDate) {
 
 // ── QGenda line-by-line text parser ──────────────────────────────────────────
 
-// Parses the raw innerText of the page assuming columns are rendered sequentially
-// (flex column layout: all Mon entries, then all Tue entries, etc.).
+// Parses the raw innerText of the page.
+// QGenda renders each day column sequentially, so the text reads:
+//   all Mon entries → all Tue entries → … (flex/column layout)
+// Date headers are split: "MON APR" on one line, "27" on the next.
 function parseQGendaText(text, fromDate, toDate) {
-  const entries   = [];
-  const seen      = new Set();
-  const lines     = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+  const entries = [];
+  const seen    = new Set();
+  const lines   = text.split(/\n/).map(l => l.trim()).filter(Boolean);
 
   const SHIFT_LABEL_RE = /^(Backup|Day\s*[A-Z]?|PIT|Swing\s*[A-Z]?|Night|Noc|FST|SLH|Alameda|San\s+Leandro)/i;
   const TIME_RE        = /^(\d{1,2}[ap])\s*[-–]\s*(\d{1,2}[ap])/i;
-  // "C. Bailey", "M. Montgomery", "A. Quinones-Rivera" — [a-z]* handles abbreviated initials.
+  // Abbreviated name: "C. Bailey", "M. Montgomery", "A. Quinones-Rivera".
+  // [a-z]* (not +) handles single-letter initials like "C.".
   const NAME_RE        = /^[A-Z][a-z]*\.?\s+[A-Z][a-z'\-]+(\s+[A-Z][a-z'\-]+)?$/;
+  // Line has a month name but no digit → it's the first half of a split date header.
+  const MONTH_ONLY_RE  = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/i;
 
-  let currentDate  = null;
-  let currentLabel = '';
-  let currentTime  = '';
+  let currentDate   = null;
+  let currentLabel  = '';
+  let currentTime   = '';
+  let pendingMonth  = ''; // e.g. "MON APR" — waiting for day number on next line
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  function addEntry(name) {
+    const shift = currentTime  ? shiftFromTime(currentTime)
+                : currentLabel ? shiftFromLabel(currentLabel) : 'day';
+    const key = `${currentDate}|${shift}|${name.toLowerCase()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      entries.push({ date: currentDate, shift, name, shiftLabel: currentLabel });
+    }
+  }
 
-    // Date header: "MON APR 27", "FRIDAY MAY 1", or just "APR 27".
-    // QGenda sometimes splits day-of-week and date onto separate lines.
+  for (const line of lines) {
+    // ── Step 1: Try combining a pending "MON APR" with a standalone day number.
+    if (pendingMonth && /^\d{1,2}$/.test(line)) {
+      const d = parseDateHeader(`${pendingMonth} ${line}`);
+      if (d) { currentDate = d; currentLabel = ''; currentTime = ''; }
+      pendingMonth = '';
+      continue;
+    }
+    pendingMonth = '';
+
+    // ── Step 2: Try to parse current line as a full or partial date.
     const d = parseDateHeader(line);
     if (d) {
-      currentDate  = d;
-      currentLabel = '';
-      currentTime  = '';
+      currentDate = d; currentLabel = ''; currentTime = '';
       continue;
     }
 
-    // Also handle "27" alone after a line containing the month+day-of-week.
-    // (QGenda splits "MON APR" and "27" into separate lines.)
-    if (currentDate && /^\d{1,2}$/.test(line)) {
-      // Try combining with previous date parse — already handled by parseDateHeader.
-      continue;
+    // Partial date: line has a month name but no digit.
+    // e.g. "MON APR", "SAT MAY", "FRIDAY" (no month → ignored).
+    if (MONTH_ONLY_RE.test(line) && !/\d/.test(line)) {
+      pendingMonth = line;
+      continue; // wait for the day number on the next line
     }
 
     if (!currentDate || currentDate < fromDate || currentDate > toDate) continue;
 
-    if (SHIFT_LABEL_RE.test(line)) {
-      currentLabel = line;
-      currentTime  = '';
-      continue;
-    }
+    // ── Step 3: Shift label, time, or provider name.
+    if (SHIFT_LABEL_RE.test(line)) { currentLabel = line; currentTime = ''; continue; }
 
     const tm = line.match(TIME_RE);
-    if (tm) {
-      currentTime = tm[1];
-      continue;
-    }
+    if (tm) { currentTime = tm[1]; continue; }
 
-    if (NAME_RE.test(line)) {
-      const shift = currentTime  ? shiftFromTime(currentTime)
-                  : currentLabel ? shiftFromLabel(currentLabel) : 'day';
-      const key = `${currentDate}|${shift}|${line.toLowerCase()}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        entries.push({ date: currentDate, shift, name: line, shiftLabel: currentLabel });
-      }
-      // Don't reset currentLabel/Time — next name in same shift uses same context.
-    }
+    if (NAME_RE.test(line)) addEntry(line);
   }
 
   entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
@@ -287,6 +292,61 @@ function parseQGendaText(text, fromDate, toDate) {
 }
 
 // ── QGenda scraper ────────────────────────────────────────────────────────────
+
+// Extract all table data + full innerText from the current page state.
+async function extractQGendaPageData(page) {
+  return page.evaluate(() => {
+    const tables = [];
+    for (const table of document.querySelectorAll('table')) {
+      const rows = [];
+      for (const tr of table.querySelectorAll('tr')) {
+        const cells = Array.from(tr.querySelectorAll('td,th'))
+          .map(td => ({ text: td.innerText.trim() }));
+        if (cells.some(c => c.text)) rows.push(cells);
+      }
+      if (rows.length > 1) tables.push(rows);
+    }
+    return { tables, text: document.body.innerText };
+  });
+}
+
+// Navigate QGenda to a specific month by filling the Start date field and
+// clicking Go. Returns true if navigation succeeded.
+async function navigateQGendaToMonth(page, monthDate) {
+  const mm = String(monthDate.getMonth() + 1).padStart(2, '0');
+  const dd = String(monthDate.getDate()).padStart(2, '0');
+  const yyyy = monthDate.getFullYear();
+  const dateStr = `${mm}/${dd}/${yyyy}`;
+
+  try {
+    // QGenda's date input is typically an <input type="text"> inside its toolbar.
+    const inputSel = 'input[type="text"][class*="date"], input[type="date"], input[placeholder*="/"], .k-datepicker input, .input-group input[type="text"]';
+    await page.waitForSelector(inputSel, { timeout: 8_000 });
+    await page.click(inputSel, { clickCount: 3 });
+    await page.type(inputSel, dateStr, { delay: 50 });
+
+    // Click the Go button.
+    const goBtnSel = 'button.btn-primary, button[type="submit"], input[type="submit"], .go-btn, button:not([disabled])';
+    const goBtn = await page.$$(goBtnSel)
+      .then(btns => btns.find(async b => {
+        const t = await b.evaluate(el => el.innerText || el.value || '');
+        return /^go$/i.test(t.trim());
+      }));
+
+    if (goBtn) {
+      await goBtn.click();
+    } else {
+      // Fall back: press Enter in the date field.
+      await page.keyboard.press('Enter');
+    }
+
+    await new Promise(r => setTimeout(r, 3000));
+    return true;
+  } catch (err) {
+    console.warn(`QGenda navigation to ${dateStr} failed:`, err.message);
+    return false;
+  }
+}
 
 async function scrapeQGenda(browser) {
   console.log('Navigating to QGenda…');
@@ -298,80 +358,88 @@ async function scrapeQGenda(browser) {
   );
 
   // Intercept JSON API responses before navigation.
+  // Drop content-type filter — just try to parse any qgenda.com response as JSON.
   const apiResponses = [];
   page.on('response', async (response) => {
     try {
       const url = response.url();
       if (!url.includes('qgenda.com')) return;
-      const ct = response.headers()['content-type'] || '';
-      if (!ct.includes('json') && !ct.includes('text/plain')) return;
-      const text = await response.text();
-      if (!text || (text[0] !== '[' && text[0] !== '{')) return;
-      const json = JSON.parse(text);
+      if (/\.(js|css|png|jpg|gif|ico|woff2?|svg|map)(\?|$)/.test(url)) return;
+      const text = await response.text().catch(() => '');
+      const t = text.trim();
+      if (!t || (t[0] !== '[' && t[0] !== '{')) return;
+      const json = JSON.parse(t);
       apiResponses.push({ url, json });
-    } catch { /* not valid JSON or not relevant */ }
+      console.log(`  API captured: ${url.slice(0, 80)}`);
+    } catch { /* skip */ }
   });
 
   await page.goto(QGENDA_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
-
-  // Extra wait for Angular to finish rendering.
+  // Extra wait for Angular to render.
   await new Promise(r => setTimeout(r, 4000));
-
-  // Save debug artifacts.
-  const html = await page.content();
-  fs.writeFileSync('qgenda-debug.html', html);
-  await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
 
   const { from, to } = dateWindow();
 
-  // Strategy 1: Parse intercepted API responses.
+  // Strategy 1: API responses.
   console.log(`QGenda: captured ${apiResponses.length} API response(s)`);
   if (apiResponses.length > 0) {
     const apiEntries = parseQGendaApiResponses(apiResponses, from, to);
     if (apiEntries.length > 0) {
       console.log(`QGenda entries from API: ${apiEntries.length}`);
+      await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
       await page.close();
       return apiEntries;
     }
   }
 
-  // Strategy 2: DOM extraction — table rows + full inner text.
-  const domData = await page.evaluate(() => {
-    // Extract all table data.
-    const tables = [];
-    for (const table of document.querySelectorAll('table')) {
-      const rows = [];
-      for (const tr of table.querySelectorAll('tr')) {
-        const cells = Array.from(tr.querySelectorAll('td,th')).map(td => ({
-          text: td.innerText.trim(),
-        }));
-        if (cells.some(c => c.text)) rows.push(cells);
-      }
-      if (rows.length > 1) tables.push(rows);
-    }
-    return { tables, text: document.body.innerText };
-  });
+  // Strategy 2: DOM/text extraction, navigating month-by-month to cover DAYS_AHEAD.
+  // QGenda shows 1 month at a time; DAYS_AHEAD=60 requires ≈2 months.
+  const allText   = [];
+  const allTables = [];
 
-  // Save innerText for debugging.
-  fs.writeFileSync('qgenda-debug.txt', domData.text);
+  const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28); // generous upper bound
+  const startMonth = new Date(from + 'T12:00:00');
+  startMonth.setDate(1); // always navigate to the 1st of the month
+
+  for (let m = 0; m < monthsToFetch; m++) {
+    const monthDate = new Date(startMonth);
+    monthDate.setMonth(monthDate.getMonth() + m);
+
+    if (m > 0) {
+      const navigated = await navigateQGendaToMonth(page, monthDate);
+      if (!navigated) break;
+    }
+
+    const data = await extractQGendaPageData(page);
+    allText.push(data.text);
+    allTables.push(...data.tables);
+    console.log(`QGenda month ${m + 1}: ${data.text.length} chars, ${data.tables.length} table(s)`);
+  }
+
+  // Save debug artifacts for the last rendered month.
+  const html = await page.content();
+  fs.writeFileSync('qgenda-debug.html', html);
+  fs.writeFileSync('qgenda-debug.txt', allText.join('\n---\n'));
+  await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
+
+  await page.close();
+
+  const combinedText = allText.join('\n');
 
   // Strategy 2a: Table parsing.
-  if (domData.tables.length > 0) {
-    console.log(`QGenda: found ${domData.tables.length} table(s)`);
-    const tableEntries = parseQGendaTables(domData.tables, from, to);
+  if (allTables.length > 0) {
+    console.log(`QGenda: ${allTables.length} table(s) found across all months`);
+    const tableEntries = parseQGendaTables(allTables, from, to);
     if (tableEntries.length > 0) {
-      console.log(`QGenda entries from table: ${tableEntries.length}`);
-      await page.close();
+      console.log(`QGenda entries from tables: ${tableEntries.length}`);
       return tableEntries;
     }
   }
 
-  // Strategy 2b: Line-by-line text parsing.
+  // Strategy 2b: Line-by-line text parsing with split-date handling.
   console.log('QGenda: falling back to text parsing…');
-  const textEntries = parseQGendaText(domData.text, from, to);
+  const textEntries = parseQGendaText(combinedText, from, to);
   console.log(`QGenda entries from text: ${textEntries.length}`);
-
-  await page.close();
   return textEntries;
 }
 
