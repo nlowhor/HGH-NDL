@@ -163,8 +163,8 @@ main {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
   min-height: 40px;
 }
 
@@ -172,17 +172,17 @@ main {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 18px 14px;
+  padding: 16px 10px 14px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
+  gap: 5px;
   text-align: center;
 }
 
 .card__photo {
-  width: 180px;
-  height: 180px;
+  width: min(90%, 160px);
+  aspect-ratio: 1;
   border-radius: 50%;
   background: var(--panel-2) center/cover no-repeat;
   border: 3px solid var(--border);
@@ -192,8 +192,9 @@ main {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 56px;
+  font-size: 48px;
   font-weight: 700;
+  margin-bottom: 6px;
 }
 .card__photo img {
   width: 100%;
@@ -202,43 +203,49 @@ main {
   display: block;
 }
 
-.card__name {
+.card__firstname {
   font-weight: 700;
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1.2;
+}
+.card__lastname {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.3;
 }
 .card__meta {
   color: var(--muted);
-  font-size: 14px;
+  font-size: 12px;
 }
 .card__pair {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   font-style: italic;
 }
 
 @media (max-width: 600px) {
-  .cards { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-  .card__photo { width: 140px; height: 140px; font-size: 44px; }
-  .card__name { font-size: 18px; }
+  .cards { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 }
 
 .card--backup {
   opacity: 0.7;
-  padding: 10px;
-  gap: 8px;
+  padding: 10px 8px;
+  gap: 4px;
 }
 .card--backup .card__photo {
-  width: 80px;
-  height: 80px;
-  font-size: 26px;
+  width: min(90%, 72px);
+  font-size: 22px;
+  margin-bottom: 2px;
 }
-.card--backup .card__name {
-  font-size: 14px;
+.card--backup .card__firstname {
+  font-size: 13px;
   font-weight: 600;
 }
-.card--backup .card__meta {
+.card--backup .card__lastname {
   font-size: 11px;
+}
+.card--backup .card__meta {
+  font-size: 10px;
 }
 
 .empty {

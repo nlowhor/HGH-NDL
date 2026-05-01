@@ -79,6 +79,8 @@ function personCard(row, seniorResidents = []) {
   } else {
     photo.textContent = initials(row.name);
   }
+  const [firstName, ...rest] = row.name.trim().split(/\s+/);
+  const lastName = rest.join(" ");
   const meta = [row.title, row.notes].filter(Boolean).join(" · ");
   let pairLine = null;
   if (row.role === "student" && seniorResidents.length) {
@@ -87,7 +89,8 @@ function personCard(row, seniorResidents = []) {
   }
   return el("div", { class: backup ? "card card--backup" : "card" }, [
     photo,
-    el("div", { class: "card__name" }, row.name),
+    el("div", { class: "card__firstname" }, firstName),
+    lastName ? el("div", { class: "card__lastname" }, lastName) : null,
     meta ? el("div", { class: "card__meta" }, meta) : null,
     pairLine,
   ]);
