@@ -1,5 +1,7 @@
 'use strict';
 
+const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
+
 /**
  * HGH Resident Schedule Sync
  * ---------------------------
@@ -166,28 +168,28 @@ function buildEntries(staffsData, schedData) {
 
 // ── Google Drive photo lookup ─────────────────────────────────────────────────
 
-// Returns a map of normalised name → Drive thumbnail URL for every image file
-// found in the folder that contains the sheet (or DRIVE_FOLDER_ID if provided).
-async function fetchDrivePhotos(auth, spreadsheetId) {
-  const drive = google.drive({ version: 'v3', auth });
+async function getDriveFolderId(drive, spreadsheetId) {
+  if (process.env.DRIVE_FOLDER_ID) {
+    console.log(`Using DRIVE_FOLDER_ID: ${process.env.DRIVE_FOLDER_ID}`);
+    return process.env.DRIVE_FOLDER_ID;
+  }
+  console.log('Looking up parent folder of the sheet…');
+  const meta = await drive.files.get({ fileId: spreadsheetId, fields: 'parents' });
+  const parents = meta.data.parents || [];
+  if (!parents.length) throw new Error('Sheet has no parent Drive folder.');
+  console.log(`Parent folder ID: ${parents[0]}`);
+  return parents[0];
+}
 
-  // Find the parent folder of the sheet (unless overridden).
-  let folderId = process.env.DRIVE_FOLDER_ID;
-  if (!folderId) {
-    console.log('Looking up parent folder of the sheet…');
-    const meta = await drive.files.get({
-      fileId: spreadsheetId,
-      fields: 'parents',
-    });
-    const parents = meta.data.parents || [];
-    if (!parents.length) {
-      console.warn('Sheet has no parent folder — skipping Drive photo lookup.');
-      return {};
-    }
-    folderId = parents[0];
-    console.log(`Parent folder ID: ${folderId}`);
-  } else {
-    console.log(`Using DRIVE_FOLDER_ID: ${folderId}`);
+// Returns { photos, folderId } — photos maps normalised name → Drive thumbnail URL.
+async function fetchDrivePhotos(auth, spreadsheetId) {
+  const drive    = google.drive({ version: 'v3', auth });
+  let   folderId;
+  try {
+    folderId = await getDriveFolderId(drive, spreadsheetId);
+  } catch (err) {
+    console.warn('Could not find Drive folder — skipping Drive photo lookup:', err.message);
+    return { photos: {}, folderId: null };
   }
 
   // List image files in the folder.
@@ -218,7 +220,48 @@ async function fetchDrivePhotos(auth, spreadsheetId) {
     const key = normalizeName(f.name);
     photoMap[key] = `https://drive.google.com/thumbnail?id=${f.id}&sz=w400`;
   }
-  return photoMap;
+  return { photos: photoMap, folderId };
+}
+
+// ── Airtable resident photo lookup ───────────────────────────────────────────
+
+// Fetches the "Resident Roster" table from the ReST Airtable base and returns
+// a map of normalised name → attachment URL. Attachment URLs expire (~2 hours)
+// so this must run at sync time and the URL written directly to the sheet.
+async function fetchAirtableResidentPhotos() {
+  const apiKey = process.env.AIRTABLE_API_KEY;
+  const baseId = process.env.AIRTABLE_RESIDENTS_BASE_ID || 'appKUhwYWruLxO7p2';
+  if (!apiKey) {
+    console.warn('AIRTABLE_API_KEY not set — skipping Airtable photo lookup.');
+    return {};
+  }
+
+  const table = encodeURIComponent('Resident Roster');
+  const fieldParams = ['Full Name', 'Photo']
+    .map(f => `fields[]=${encodeURIComponent(f)}`).join('&');
+
+  const photos = {};
+  let offset;
+  do {
+    const url = `https://api.airtable.com/v0/${baseId}/${table}?${fieldParams}` +
+                (offset ? `&offset=${offset}` : '');
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) throw new Error(`Airtable resident fetch failed: HTTP ${res.status}`);
+    const data = await res.json();
+    for (const record of (data.records || [])) {
+      const name        = record.fields['Full Name'];
+      const attachments = record.fields['Photo'];
+      if (!name || !Array.isArray(attachments) || !attachments.length) continue;
+      const photoUrl = attachments[0].url;
+      if (photoUrl) photos[normalizeName(name)] = photoUrl;
+    }
+    offset = data.offset;
+  } while (offset);
+
+  console.log(`Airtable resident photos: ${Object.keys(photos).length} record(s) indexed.`);
+  return photos;
 }
 
 // ── Google API clients ────────────────────────────────────────────────────────
@@ -236,7 +279,7 @@ async function getAuth() {
 
 // ── Google Sheets write ───────────────────────────────────────────────────────
 
-async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos) {
+async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos = {}) {
   // Read header row.
   const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -297,10 +340,10 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
 
   if (!entries.length) { console.log('No entries to append.'); return 0; }
 
-  // Photo priority: Drive folder match > previously saved in sheet.
+  // Photo priority: Airtable > Drive folder > previously saved in sheet.
   const resolvePhoto = (name) => {
     const key = normalizeName(name);
-    return drivePhotos[key] || savedPhotos[key] || '';
+    return airtablePhotos[key] || drivePhotos[key] || savedPhotos[key] || '';
   };
 
   let photoHits = 0;
@@ -330,6 +373,36 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
   return newRows.length;
 }
 
+// ── GitHub Pages photo persistence ───────────────────────────────────────────
+
+// Takes the airtablePhotos map (normalizedName → url) and returns a new map
+// where Airtable URLs have been replaced with permanent GitHub Pages URLs.
+async function persistResidentPhotos(airtablePhotos) {
+  if (!process.env.GITHUB_TOKEN) {
+    console.warn('GITHUB_TOKEN not set — skipping GitHub Pages photo persistence.');
+    return airtablePhotos;
+  }
+
+  const persisted = {};
+  let hits    = 0;
+  let skipped = 0;
+
+  for (const [key, url] of Object.entries(airtablePhotos)) {
+    if (!isAirtableUrl(url)) { persisted[key] = url; skipped++; continue; }
+    const fileKey = key.replace(/ /g, '-');
+    try {
+      persisted[key] = await ensurePhotoInPages(fileKey, url, 'photos/residents');
+      hits++;
+    } catch (err) {
+      console.warn(`  Photo persistence failed for key "${key}":`, err.message);
+      persisted[key] = url; // fall back to expiring URL
+    }
+  }
+
+  console.log(`Resident photos persisted to GitHub Pages: ${hits} (${skipped} already permanent).`);
+  return persisted;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -352,14 +425,25 @@ async function main() {
 
   let drivePhotos = {};
   try {
-    drivePhotos = await fetchDrivePhotos(auth, spreadsheetId);
-    const matched = Object.keys(drivePhotos).length;
-    console.log(`Drive photo lookup: ${matched} image(s) indexed.`);
+    const result = await fetchDrivePhotos(auth, spreadsheetId);
+    drivePhotos  = result.photos;
+    console.log(`Drive photo lookup: ${Object.keys(drivePhotos).length} image(s) indexed.`);
   } catch (err) {
     console.warn('Drive photo lookup failed (photos will fall back to saved values):', err.message);
   }
 
-  const n = await writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos);
+  let airtablePhotos = {};
+  try {
+    const raw = await fetchAirtableResidentPhotos();
+    airtablePhotos = await persistResidentPhotos(raw).catch(err => {
+      console.warn('GitHub Pages photo persistence failed (falling back to Airtable URLs):', err.message);
+      return raw;
+    });
+  } catch (err) {
+    console.warn('Airtable resident photo lookup failed:', err.message);
+  }
+
+  const n = await writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos);
   console.log(`\nDone. ${n} resident shift rows written to sheet.`);
 }
 
