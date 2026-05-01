@@ -305,21 +305,33 @@ async function fetchStudentPhotos() {
 
 // Extract a clean student name from an Airtable record's fields object.
 function extractName(fields) {
-  // Strategy 1: "Name (from Student)" lookup array — most reliable when present.
+  // Strategy 1: "Preferred Name (optional)" when it has 2+ words (First Last).
+  // Students sometimes enter their full name here; prefer it over the lookup
+  // which often only contains the given name.
+  const preferred = fields['Preferred Name (optional)'];
+  if (typeof preferred === 'string') {
+    const words = preferred.trim().split(/\s+/).filter(Boolean);
+    if (words.length >= 2) return words.join(' ');
+  }
+
+  // Strategy 2: "Name (from Student)" lookup array — may be full name or just given name.
   const fromStudent = fields['Name (from Student)'];
   if (Array.isArray(fromStudent) && typeof fromStudent[0] === 'string' && fromStudent[0].trim()) {
     return fromStudent[0].trim();
   }
 
-  // Strategy 2: "Name" formula field — strip trailing phone number.
+  // Strategy 3: "Name" formula field — strip block label and phone number patterns.
+  // Format seen: "FirstName - Block X (dates)" or "Name (phone)"
   const nameFormula = fields['Name'];
   if (typeof nameFormula === 'string') {
-    const clean = nameFormula.replace(/\s*\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}.*$/, '').trim();
+    const clean = nameFormula
+      .replace(/\s*-\s*Block.*$/i, '')              // strip " - Block ..." suffix
+      .replace(/\s*\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}.*$/, '') // strip phone
+      .trim();
     if (clean.length > 1) return clean;
   }
 
-  // Strategy 3: "Preferred Name (optional)" if filled in.
-  const preferred = fields['Preferred Name (optional)'];
+  // Strategy 4: "Preferred Name" even if just one word (nickname).
   if (typeof preferred === 'string' && preferred.trim().length > 1) return preferred.trim();
 
   return null;
@@ -357,29 +369,28 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   const photoCol = headers.indexOf('photo_url');
   const notesCol = headers.indexOf('notes');
 
+  // Read entire sheet, strip student rows, append new ones, then rewrite.
+  // This avoids fragile row-index deletion (deleteDimension fails when row
+  // counts change between the read and the write).
   const allRes   = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows     = allRes.data.values || [];
-  const toDelete = [];
+  const kept     = rows.slice(0, 1); // header row always kept
+  let  removed   = 0;
   for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE)
-      toDelete.push(i + 1);
+    if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) { removed++; continue; }
+    kept.push(rows[i]);
   }
+  console.log(`Removed ${removed} existing student row(s).`);
 
-  if (toDelete.length) {
-    const meta    = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheetId = meta.data.sheets.find(s => s.properties.title === ROSTER_TAB).properties.sheetId;
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: toDelete.reverse().map(rowNum => ({
-          deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: rowNum - 1, endIndex: rowNum } },
-        })),
-      },
+  if (!entries.length) {
+    // Rewrite without student rows and return.
+    await sheets.spreadsheets.values.update({
+      spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
+      requestBody: { values: kept },
     });
-    console.log(`Deleted ${toDelete.length} existing student row(s).`);
+    console.log('No student entries to write.');
+    return 0;
   }
-
-  if (!entries.length) { console.log('No student entries to write.'); return 0; }
 
   let photoHits = 0;
   const width   = headers.length;
@@ -400,9 +411,10 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     return row;
   });
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId, range: ROSTER_TAB, valueInputOption: 'RAW',
-    requestBody: { values: newRows },
+  const allNewRows = [...kept, ...newRows];
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
+    requestBody: { values: allNewRows },
   });
 
   console.log(`Wrote ${newRows.length} student row(s) (${photoHits} with photo_url).`);
