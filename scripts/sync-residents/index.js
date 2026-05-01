@@ -57,14 +57,19 @@ function pgyLabel(pgyStr) {
 }
 
 // Normalise a name for fuzzy matching: strip extension, replace separators,
-// lowercase, sort words so "Smith, John" matches "John Smith".
+// remove medical credentials, lowercase, sort words so "Smith, John" matches
+// "John Smith", and "John Smith MD" matches "John Smith".
+const CREDENTIAL_RE = /\b(md|do|phd|mph|facp|facep|ms|rn|np|pa|c)\b\.?/gi;
+
 function normalizeName(s) {
   return s
     .replace(/\.[^.]+$/, '')          // remove file extension
+    .replace(CREDENTIAL_RE, ' ')      // strip credentials (MD, DO, etc.)
     .replace(/[_,\-]+/g, ' ')         // separators → spaces
     .toLowerCase()
     .trim()
     .split(/\s+/)
+    .filter(Boolean)
     .sort()
     .join(' ');
 }
@@ -340,10 +345,21 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
 
   if (!entries.length) { console.log('No entries to append.'); return 0; }
 
-  // Photo priority: Airtable > Drive folder > previously saved in sheet.
+  // Build a last-name index from airtablePhotos so we can fall back to
+  // last-name-only matching when Medrez names differ from Airtable names
+  // (e.g. Medrez "John Smith MD" vs Airtable "John Smith").
+  const airtableByLast = {};
+  for (const [key, url] of Object.entries(airtablePhotos)) {
+    const words = key.split(' ');
+    const last = words[words.length - 1];
+    if (last && !airtableByLast[last]) airtableByLast[last] = url;
+  }
+
+  // Photo priority: Airtable (full name) > Airtable (last name) > Drive > saved.
   const resolvePhoto = (name) => {
-    const key = normalizeName(name);
-    return airtablePhotos[key] || drivePhotos[key] || savedPhotos[key] || '';
+    const key  = normalizeName(name);
+    const last = name.trim().split(/\s+/).pop().toLowerCase().replace(/[^a-z]/g, '');
+    return airtablePhotos[key] || airtableByLast[last] || drivePhotos[key] || savedPhotos[key] || '';
   };
 
   let photoHits = 0;
