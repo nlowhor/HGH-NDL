@@ -17,6 +17,7 @@
 const { ensurePhotoInPages } = require('../lib/github-photos');
 const puppeteer  = require('puppeteer');
 const { google } = require('googleapis');
+const fs         = require('fs');
 
 const QGENDA_URL     = 'https://app.qgenda.com/Link/view?linkKey=f175f5fe-1111-4da4-8e80-09b3d6b90a98';
 const FACULTY_URL    = 'https://www.highlandemergency.org/faculty/';
@@ -38,42 +39,29 @@ function dateWindow() {
   return { from: isoDate(from), to: isoDate(to) };
 }
 
-// Map a start-time string from QGenda (e.g. "7a", "3p", "11p", "9a") → shift bucket.
+// Map a start-time string like "7a", "3p", "11p", "9a" or "7:00 AM" → shift bucket.
 function shiftFromTime(timeStr) {
   if (!timeStr) return 'day';
-  const m = String(timeStr).match(/(\d{1,2})(a|p)/i);
+  const m = String(timeStr).match(/(\d{1,2})(?::(\d{2}))?\s*(a|p|am|pm)/i);
   if (!m) return 'day';
   let h = parseInt(m[1], 10);
-  if (m[2].toLowerCase() === 'p' && h !== 12) h += 12;
-  if (m[2].toLowerCase() === 'a' && h === 12) h = 0;
+  const ap = m[3].toLowerCase().startsWith('p');
+  if (ap && h !== 12) h += 12;
+  if (!ap && h === 12) h = 0;
   if (h >= 23 || h < 7) return 'night';
   if (h >= 15)           return 'evening';
   return 'day';
 }
 
-// Map a QGenda shift label to a shift bucket when there's no reliable time.
-const SHIFT_LABEL_MAP = {
-  'backup':  'day',
-  'day':     'day',
-  'pit':     'day',
-  'swing':   'evening',
-  'night':   'night',
-  'noc':     'night',
-  'evening': 'evening',
-  'eve':     'evening',
-};
 function shiftFromLabel(label) {
   const k = String(label || '').toLowerCase();
-  for (const [prefix, bucket] of Object.entries(SHIFT_LABEL_MAP)) {
-    if (k.startsWith(prefix)) return bucket;
-  }
+  if (/^night|^noc/.test(k))   return 'night';
+  if (/^swing|^eve|^pm/.test(k)) return 'evening';
   return 'day';
 }
 
-// Normalise a name for photo lookup: lowercase + sort words.
-// QGenda names are abbreviated ("S. Miller"); faculty names are full ("Sarah Miller").
-// We index faculty photos by last name only as the primary key.
-const CREDENTIAL_RE = /\b(md|do|phd|mph|facp|facep|rn|np|pa)\b\.?/gi;
+// Normalise a name for photo lookup: strip credentials, sort words.
+const CREDENTIAL_RE = /\b(md|do|phd|mph|facp|facep|rn|np|pa|ms|msed|macm|msc)\b\.?/gi;
 function normalizeName(s) {
   return s
     .replace(/\.[^.]+$/, '')
@@ -84,28 +72,218 @@ function normalizeName(s) {
     .join(' ');
 }
 
-// Extract the last word of a name as a last-name key (strips credentials first).
+// Extract last name (strip credentials first).
 function lastName(s) {
-  const clean = s.replace(CREDENTIAL_RE, '').replace(/[.,]/g, '').trim();
-  const words = clean.split(/\s+/).filter(Boolean);
+  const words = s.replace(CREDENTIAL_RE, '').replace(/[.,]/g, '').trim().split(/\s+/).filter(Boolean);
   return (words[words.length - 1] || '').toLowerCase();
 }
 
-// Parse QGenda header text ("MON APR 27", "FRIDAY MAY 1") → "YYYY-MM-DD" or null.
-const MONTH_NUM = {
-  jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
-};
+// Parse QGenda header text → "YYYY-MM-DD" or null.
+const MONTH_NUM = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
 function parseDateHeader(text) {
-  const m = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})(?:,?\s*(\d{4}))?/i);
+  const m = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})(?:[,\s]+(\d{4}))?/i);
   if (!m) return null;
-  const mon = MONTH_NUM[m[1].toLowerCase().slice(0, 3)];
+  const mon = MONTH_NUM[m[1].toLowerCase().slice(0,3)];
   const day = parseInt(m[2], 10);
-  // If the year is not in the header, infer it from today (handle year boundary).
-  let year = m[3] ? parseInt(m[3], 10) : new Date().getFullYear();
-  // If the parsed date (without year) is far in the past, assume next year.
+  let year  = m[3] ? parseInt(m[3], 10) : new Date().getFullYear();
+  // Roll over to next year if date is far in the past.
   const probe = new Date(`${year}-${String(mon).padStart(2,'0')}-${String(day).padStart(2,'0')}`);
   if (probe < new Date(Date.now() - 90 * 86400_000)) year++;
   return `${year}-${String(mon).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+}
+
+// ── QGenda API response parser ────────────────────────────────────────────────
+
+// Recursively search a JSON value for arrays of objects that look like schedule tasks.
+function findScheduleArrays(val, depth = 0) {
+  if (depth > 6 || !val || typeof val !== 'object') return [];
+  const results = [];
+  if (Array.isArray(val)) {
+    if (val.length > 0 && typeof val[0] === 'object' && val[0] !== null) {
+      // Does this array look like schedule tasks?
+      const keys = Object.keys(val[0]).join(' ').toLowerCase();
+      if (/date|staff|name|shift|task|assign/i.test(keys)) {
+        results.push(val);
+      }
+    }
+    for (const item of val.slice(0, 20)) results.push(...findScheduleArrays(item, depth + 1));
+  } else {
+    for (const v of Object.values(val)) results.push(...findScheduleArrays(v, depth + 1));
+  }
+  return results;
+}
+
+function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
+  const entries = [];
+  const seen    = new Set();
+
+  for (const { url, json } of apiResponses) {
+    console.log(`  Parsing API: ${url.slice(0, 100)}`);
+    const arrays = findScheduleArrays(json);
+    console.log(`    Found ${arrays.length} candidate arrays`);
+
+    for (const arr of arrays) {
+      for (const item of arr) {
+        // Try to find date, name, and time from various key naming conventions.
+        const itemStr = JSON.stringify(item).toLowerCase();
+        if (!itemStr.includes('date') && !itemStr.includes('name')) continue;
+
+        const dateRaw  = item.date || item.taskDate || item.startDate || item.scheduleDate || '';
+        const nameRaw  = item.staffName || item.name || item.displayName || item.providerName ||
+                         (item.staff && (item.staff.name || item.staff.displayName)) || '';
+        const timeRaw  = item.startTime || item.start || item.time || '';
+        const labelRaw = item.taskName || item.shiftName || item.name || '';
+
+        const date = parseDateHeader(String(dateRaw));
+        if (!date || date < fromDate || date > toDate) continue;
+        if (!nameRaw) continue;
+
+        const shift = timeRaw ? shiftFromTime(String(timeRaw)) : shiftFromLabel(String(labelRaw));
+        const name  = String(nameRaw).trim();
+        const key   = `${date}|${shift}|${name.toLowerCase()}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          entries.push({ date, shift, name, shiftLabel: String(labelRaw) });
+        }
+      }
+    }
+  }
+
+  entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+  return entries;
+}
+
+// ── QGenda table parser ───────────────────────────────────────────────────────
+
+function parseQGendaTables(tables, fromDate, toDate) {
+  const entries = [];
+  const seen    = new Set();
+
+  for (const rows of tables) {
+    if (rows.length < 2) continue;
+
+    // Find the header row with date-like cells.
+    let headerIdx = -1;
+    let colDates  = [];
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      const dates = rows[i].map(c => parseDateHeader(c.text));
+      if (dates.filter(Boolean).length >= 3) {
+        headerIdx = i;
+        colDates  = dates;
+        break;
+      }
+    }
+    if (headerIdx < 0) continue;
+    console.log(`QGenda table: header at row ${headerIdx}, dates: ${colDates.filter(Boolean).join(', ')}`);
+
+    // Each subsequent row is a shift row; each cell has shift info for that day.
+    const SHIFT_RE = /^(Backup|Day\s*[A-Z]?|PIT|Swing|Night|FST|SLH|Noc|Alameda|San\s+Leandro)/i;
+    const TIME_RE  = /(\d{1,2}[ap])\s*[-–]\s*(\d{1,2}[ap])/i;
+    // Abbreviated name: "C. Bailey" — note [a-z]* (zero or more lowercase after initial).
+    const NAME_RE  = /^[A-Z][a-z]*\.?\s+[A-Z][a-z'\-]+(\s+[A-Z][a-z'\-]+)?$/;
+
+    let currentLabel = '';
+    let currentTime  = '';
+
+    for (let r = headerIdx + 1; r < rows.length; r++) {
+      const cells = rows[r];
+      for (let c = 0; c < cells.length; c++) {
+        const date = colDates[c];
+        if (!date || date < fromDate || date > toDate) continue;
+        const text = cells[c].text.trim();
+        if (!text) continue;
+
+        // Multi-line cell: each line is a separate element.
+        const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+        let cellLabel = '', cellTime = '';
+        for (const line of lines) {
+          if (SHIFT_RE.test(line)) { cellLabel = line; cellTime = ''; continue; }
+          const tm = line.match(TIME_RE);
+          if (tm) { cellTime = tm[1]; continue; }
+          if (NAME_RE.test(line)) {
+            const shift = cellTime ? shiftFromTime(cellTime)
+                        : cellLabel ? shiftFromLabel(cellLabel) : 'day';
+            const key = `${date}|${shift}|${line.toLowerCase()}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              entries.push({ date, shift, name: line, shiftLabel: cellLabel });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+  return entries;
+}
+
+// ── QGenda line-by-line text parser ──────────────────────────────────────────
+
+// Parses the raw innerText of the page assuming columns are rendered sequentially
+// (flex column layout: all Mon entries, then all Tue entries, etc.).
+function parseQGendaText(text, fromDate, toDate) {
+  const entries   = [];
+  const seen      = new Set();
+  const lines     = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+
+  const SHIFT_LABEL_RE = /^(Backup|Day\s*[A-Z]?|PIT|Swing\s*[A-Z]?|Night|Noc|FST|SLH|Alameda|San\s+Leandro)/i;
+  const TIME_RE        = /^(\d{1,2}[ap])\s*[-–]\s*(\d{1,2}[ap])/i;
+  // "C. Bailey", "M. Montgomery", "A. Quinones-Rivera" — [a-z]* handles abbreviated initials.
+  const NAME_RE        = /^[A-Z][a-z]*\.?\s+[A-Z][a-z'\-]+(\s+[A-Z][a-z'\-]+)?$/;
+
+  let currentDate  = null;
+  let currentLabel = '';
+  let currentTime  = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Date header: "MON APR 27", "FRIDAY MAY 1", or just "APR 27".
+    // QGenda sometimes splits day-of-week and date onto separate lines.
+    const d = parseDateHeader(line);
+    if (d) {
+      currentDate  = d;
+      currentLabel = '';
+      currentTime  = '';
+      continue;
+    }
+
+    // Also handle "27" alone after a line containing the month+day-of-week.
+    // (QGenda splits "MON APR" and "27" into separate lines.)
+    if (currentDate && /^\d{1,2}$/.test(line)) {
+      // Try combining with previous date parse — already handled by parseDateHeader.
+      continue;
+    }
+
+    if (!currentDate || currentDate < fromDate || currentDate > toDate) continue;
+
+    if (SHIFT_LABEL_RE.test(line)) {
+      currentLabel = line;
+      currentTime  = '';
+      continue;
+    }
+
+    const tm = line.match(TIME_RE);
+    if (tm) {
+      currentTime = tm[1];
+      continue;
+    }
+
+    if (NAME_RE.test(line)) {
+      const shift = currentTime  ? shiftFromTime(currentTime)
+                  : currentLabel ? shiftFromLabel(currentLabel) : 'day';
+      const key = `${currentDate}|${shift}|${line.toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        entries.push({ date: currentDate, shift, name: line, shiftLabel: currentLabel });
+      }
+      // Don't reset currentLabel/Time — next name in same shift uses same context.
+    }
+  }
+
+  entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+  return entries;
 }
 
 // ── QGenda scraper ────────────────────────────────────────────────────────────
@@ -119,152 +297,82 @@ async function scrapeQGenda(browser) {
     '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
   );
 
-  await page.goto(QGENDA_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
-
-  // QGenda is Angular — wait for the calendar grid to appear.
-  // The date headers contain day-of-week text (MON, TUE, etc.).
-  try {
-    await page.waitForFunction(
-      () => document.body.innerText.match(/\b(MON|TUE|WED|THU|FRI|SAT|SUN)\b/),
-      { timeout: 30_000 }
-    );
-  } catch {
-    console.warn('QGenda: timed out waiting for calendar text; proceeding anyway.');
-  }
-
-  await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
-
-  // Extract structured calendar data from the DOM.
-  // QGenda renders a grid: column per day, shift blocks within each column.
-  // We walk every element looking for date-header and shift-block patterns.
-  const rawCells = await page.evaluate(() => {
-    const results = [];
-
-    // ── Try structured column extraction ──────────────────────────────────
-    // QGenda typically renders something like:
-    //   <div class="...day-column...">
-    //     <div class="...day-header...">MON APR 27</div>
-    //     <div class="...task...">
-    //       <span class="label">Day A</span>
-    //       <span class="time">7a - 4p</span>
-    //       <span class="staff">C. Bailey</span>
-    //     </div>
-    //     ...
-    //   </div>
-    //
-    // We collect every leaf text node and its bounding rect to later group
-    // by x-position (column).
-
-    function textLeaves(root) {
-      const out = [];
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      let n;
-      while ((n = walker.nextNode())) {
-        const t = n.textContent.trim();
-        if (!t) continue;
-        const el = n.parentElement;
-        if (!el) continue;
-        const tag = el.tagName.toLowerCase();
-        if (['script','style','noscript','head'].includes(tag)) continue;
-        const rect = el.getBoundingClientRect();
-        if (rect.width < 1 || rect.height < 1) continue;
-        out.push({ text: t, x: Math.round(rect.left), y: Math.round(rect.top) });
-      }
-      return out;
-    }
-
-    return textLeaves(document.body);
+  // Intercept JSON API responses before navigation.
+  const apiResponses = [];
+  page.on('response', async (response) => {
+    try {
+      const url = response.url();
+      if (!url.includes('qgenda.com')) return;
+      const ct = response.headers()['content-type'] || '';
+      if (!ct.includes('json') && !ct.includes('text/plain')) return;
+      const text = await response.text();
+      if (!text || (text[0] !== '[' && text[0] !== '{')) return;
+      const json = JSON.parse(text);
+      apiResponses.push({ url, json });
+    } catch { /* not valid JSON or not relevant */ }
   });
 
-  await page.close();
+  await page.goto(QGENDA_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
+
+  // Extra wait for Angular to finish rendering.
+  await new Promise(r => setTimeout(r, 4000));
+
+  // Save debug artifacts.
+  const html = await page.content();
+  fs.writeFileSync('qgenda-debug.html', html);
+  await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
 
   const { from, to } = dateWindow();
-  const entries = parseQGendaCells(rawCells, from, to);
-  console.log(`QGenda entries parsed: ${entries.length}`);
-  return entries;
-}
 
-// Group text leaves by x-column (±20px tolerance), then parse each column
-// as a vertical list of: date header → (shift label, time, name) triplets.
-function parseQGendaCells(cells, fromDate, toDate) {
-  if (!cells.length) return [];
-
-  // Cluster by x-position into columns.
-  const COL_TOLERANCE = 25;
-  const columns = []; // [{ x, items[] }]
-  for (const cell of cells) {
-    let col = columns.find(c => Math.abs(c.x - cell.x) <= COL_TOLERANCE);
-    if (!col) { col = { x: cell.x, items: [] }; columns.push(col); }
-    col.items.push(cell);
-  }
-
-  // Sort columns left-to-right, items top-to-bottom.
-  columns.sort((a, b) => a.x - b.x);
-  for (const col of columns) col.items.sort((a, b) => a.y - b.y);
-
-  const entries = [];
-  const seen    = new Set();
-
-  for (const col of columns) {
-    // Find the date header for this column.
-    let colDate = null;
-    for (const item of col.items) {
-      const d = parseDateHeader(item.text);
-      if (d) { colDate = d; break; }
-    }
-    if (!colDate || colDate < fromDate || colDate > toDate) continue;
-
-    // Walk items looking for shift blocks.
-    // Pattern: a shift-label line (e.g. "Day A"), an optional time line
-    // (e.g. "7a - 4p"), then a name line (e.g. "C. Bailey").
-    const SHIFT_LABEL_RE = /^(Backup|Day\s*[A-Z]?|PIT|Swing\s*[A-Z]?|Night|Day Shift|SLH PIT|FST|HGH|Noc)/i;
-    const TIME_RE        = /(\d{1,2}[ap])\s*[-–]\s*(\d{1,2}[ap])/i;
-    const NAME_RE        = /^[A-Z][a-z]+\.?\s+[A-Z][a-z']+/; // "C. Bailey" or "Sarah Miller"
-
-    let pendingLabel = null;
-    let pendingTime  = null;
-
-    for (const item of col.items) {
-      const t = item.text.trim();
-      if (!t || t.length > 60) continue;
-
-      if (SHIFT_LABEL_RE.test(t)) {
-        pendingLabel = t;
-        pendingTime  = null;
-        continue;
-      }
-
-      const timeMatch = t.match(TIME_RE);
-      if (timeMatch && pendingLabel) {
-        pendingTime = timeMatch[1]; // start time, e.g. "7a"
-        continue;
-      }
-
-      // Name line: "C. Bailey", "M. Montgomery", "A. Herring", etc.
-      if (NAME_RE.test(t) && pendingLabel) {
-        const shift = pendingTime
-          ? shiftFromTime(pendingTime)
-          : shiftFromLabel(pendingLabel);
-        const key = `${colDate}|${shift}|${t.toLowerCase()}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          entries.push({
-            date:      colDate,
-            shift,
-            name:      t,
-            shiftLabel: pendingLabel,
-          });
-        }
-        // Reset: keep label for the next name if time was just updated.
-        pendingTime = null;
-        pendingLabel = null;
-        continue;
-      }
+  // Strategy 1: Parse intercepted API responses.
+  console.log(`QGenda: captured ${apiResponses.length} API response(s)`);
+  if (apiResponses.length > 0) {
+    const apiEntries = parseQGendaApiResponses(apiResponses, from, to);
+    if (apiEntries.length > 0) {
+      console.log(`QGenda entries from API: ${apiEntries.length}`);
+      await page.close();
+      return apiEntries;
     }
   }
 
-  entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
-  return entries;
+  // Strategy 2: DOM extraction — table rows + full inner text.
+  const domData = await page.evaluate(() => {
+    // Extract all table data.
+    const tables = [];
+    for (const table of document.querySelectorAll('table')) {
+      const rows = [];
+      for (const tr of table.querySelectorAll('tr')) {
+        const cells = Array.from(tr.querySelectorAll('td,th')).map(td => ({
+          text: td.innerText.trim(),
+        }));
+        if (cells.some(c => c.text)) rows.push(cells);
+      }
+      if (rows.length > 1) tables.push(rows);
+    }
+    return { tables, text: document.body.innerText };
+  });
+
+  // Save innerText for debugging.
+  fs.writeFileSync('qgenda-debug.txt', domData.text);
+
+  // Strategy 2a: Table parsing.
+  if (domData.tables.length > 0) {
+    console.log(`QGenda: found ${domData.tables.length} table(s)`);
+    const tableEntries = parseQGendaTables(domData.tables, from, to);
+    if (tableEntries.length > 0) {
+      console.log(`QGenda entries from table: ${tableEntries.length}`);
+      await page.close();
+      return tableEntries;
+    }
+  }
+
+  // Strategy 2b: Line-by-line text parsing.
+  console.log('QGenda: falling back to text parsing…');
+  const textEntries = parseQGendaText(domData.text, from, to);
+  console.log(`QGenda entries from text: ${textEntries.length}`);
+
+  await page.close();
+  return textEntries;
 }
 
 // ── Faculty photo scraper ─────────────────────────────────────────────────────
@@ -273,7 +381,6 @@ async function scrapeFacultyPhotos(browser) {
   console.log('Navigating to Highland Emergency faculty page…');
   const page = await browser.newPage();
   page.setDefaultTimeout(90_000);
-
   await page.setUserAgent(
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
     '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -285,152 +392,148 @@ async function scrapeFacultyPhotos(browser) {
 
   await page.goto(FACULTY_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
 
-  // WordPress sites often continue loading after networkidle2 fires.
-  // Wait for the loading spinner to disappear or for actual content to appear.
+  // Wait for WordPress loading overlay to clear.
   try {
-    // Wait for any WordPress loading overlay to go away.
     await page.waitForFunction(
       () => {
         const spinners = document.querySelectorAll(
           '.loading,.loader,.spinner,[class*="loading"],[class*="spinner"],[class*="preloader"]'
         );
         for (const s of spinners) {
-          const style = window.getComputedStyle(s);
-          if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-            return false;
-          }
+          const st = window.getComputedStyle(s);
+          if (st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0') return false;
         }
         return true;
       },
-      { timeout: 30_000 }
+      { timeout: 20_000 }
     );
-  } catch { /* spinner check timed out — proceed anyway */ }
+  } catch { /* spinner check timed out */ }
 
-  // Also wait for at least one image with a person-like alt text or an
-  // element that looks like a faculty card.
-  const CONTENT_SELECTORS = [
-    '[class*="faculty"]', '[class*="Faculty"]',
-    '[class*="team-member"]', '[class*="TeamMember"]',
-    '[class*="staff"]', '[class*="people"]',
-    '.et_pb_team_member', // Divi theme
-    '.elementor-widget-team-member', // Elementor
-    'img[alt*="MD"]', 'img[alt*="DO"]',
-    '.wp-block-group img',
-    'article img',
-  ];
-  for (const sel of CONTENT_SELECTORS) {
-    try {
-      await page.waitForSelector(sel, { timeout: 8_000 });
-      console.log(`Faculty: content ready via "${sel}"`);
-      break;
-    } catch { /* try next */ }
-  }
-
-  // Scroll to the bottom to trigger lazy-loaded images.
+  // Scroll to trigger lazy-loaded images.
   await page.evaluate(async () => {
     await new Promise(resolve => {
-      let last = 0;
+      let pos = 0;
       const id = setInterval(() => {
-        window.scrollBy(0, 600);
-        if (document.body.scrollTop === last) { clearInterval(id); resolve(); }
-        last = document.body.scrollTop;
-      }, 200);
-      setTimeout(() => { clearInterval(id); resolve(); }, 5000);
+        window.scrollBy(0, 800);
+        if (document.body.scrollHeight <= pos + window.innerHeight) { clearInterval(id); resolve(); }
+        pos += 800;
+      }, 150);
+      setTimeout(() => { clearInterval(id); resolve(); }, 6000);
     });
     window.scrollTo(0, 0);
   });
 
+  // Save debug HTML.
+  const html = await page.content();
+  fs.writeFileSync('faculty-debug.html', html);
   await page.screenshot({ path: 'faculty-debug.png', fullPage: true }).catch(() => {});
 
   const photos = await page.evaluate((facultyUrl) => {
     const result = {};
 
-    function absoluteUrl(src) {
-      if (!src) return '';
-      try { return new URL(src, facultyUrl).href; } catch { return ''; }
+    function absUrl(src) {
+      try { return new URL(src || '', facultyUrl).href; } catch { return ''; }
     }
 
-    function bestImg(el) {
-      // Prefer data-src (lazy-loaded) then src.
-      const imgs = el.querySelectorAll('img');
-      for (const img of imgs) {
+    // Find the best image src for an element (prefers data-src for lazy images).
+    function bestSrc(el) {
+      for (const img of el.querySelectorAll('img')) {
         const src = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') ||
-                    img.getAttribute('data-srcset') || img.src || '';
-        if (!src || src.startsWith('data:') || src.includes('placeholder') || src.endsWith('.svg')) continue;
-        // Skip very small icons.
-        if (img.naturalWidth > 0 && img.naturalWidth < 40) continue;
-        return src;
+                    img.getAttribute('src') || '';
+        if (!src || src.startsWith('data:') || src.endsWith('.svg') || src.includes('placeholder')) continue;
+        // Skip tiny icons (<50px natural width if known).
+        if (img.naturalWidth > 0 && img.naturalWidth < 50) continue;
+        return absUrl(src);
       }
-      // CSS background image fallback.
-      const all = [el, ...el.querySelectorAll('*')];
-      for (const node of all) {
-        const bg = window.getComputedStyle(node).backgroundImage || '';
+      // CSS background-image fallback.
+      for (const node of [el, ...el.querySelectorAll('[style*="background"]')]) {
+        const bg = (node.getAttribute('style') || '') + window.getComputedStyle(node).backgroundImage;
         const m  = bg.match(/url\(["']?([^"')]+)["']?\)/);
-        if (m && !m[1].startsWith('data:') && !m[1].endsWith('.svg')) return m[1];
+        if (m && !m[1].startsWith('data:') && !m[1].endsWith('.svg')) return absUrl(m[1]);
       }
       return '';
     }
 
-    function bestName(el) {
-      // Prefer heading tags, then strong/b, then first line of text.
-      for (const tag of ['h1','h2','h3','h4','h5','h6','strong','b']) {
-        for (const node of el.querySelectorAll(tag)) {
-          const t = node.innerText.replace(/\s+/g, ' ').trim();
-          if (t.length >= 4 && t.length <= 80) return t;
+    // Key insight for this WordPress theme: each faculty card has an <img> and
+    // somewhere nearby a line of text containing a medical credential (MD, DO, etc.).
+    // We find every <img>, then walk up and around its DOM to find the name.
+
+    const CREDENTIAL_RE = /\b(md|do|phd|mph|msed?|macm|msc)\b/i;
+    const NAME_RE       = /^[A-Z][a-z]+(\s+[A-Za-z'\-]+){1,4}(,\s*(MD|DO|PhD|MPH|MACM|MSEd?|MSc))?/;
+
+    function textOf(el) {
+      return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    // Given an element, find nearby text that looks like "FirstName LastName, MD".
+    function nearbyName(imgEl) {
+      // Walk up the tree, looking within each ancestor for a credential-bearing heading.
+      let el = imgEl.parentElement;
+      for (let depth = 0; depth < 7 && el; depth++) {
+        // Only consider a container that has few (<= 4) imgs (otherwise too broad).
+        if (el.querySelectorAll('img').length > 4) { el = el.parentElement; continue; }
+
+        // Look for heading elements within this container.
+        for (const tag of ['h1','h2','h3','h4','h5','h6','strong','b','p']) {
+          for (const node of el.querySelectorAll(tag)) {
+            const t = textOf(node).split('\n')[0].trim();
+            if (t.length < 4 || t.length > 80) continue;
+            if (CREDENTIAL_RE.test(t) && NAME_RE.test(t)) return t;
+          }
+        }
+
+        // Also look at adjacent siblings (next sibling div/p).
+        for (const sib of [el.nextElementSibling, el.previousElementSibling]) {
+          if (!sib) continue;
+          const t = textOf(sib).split('\n')[0].trim();
+          if (t.length >= 4 && t.length <= 80 && CREDENTIAL_RE.test(t) && NAME_RE.test(t)) return t;
+        }
+
+        el = el.parentElement;
+      }
+      return '';
+    }
+
+    // Also scan for the pattern: heading with credential, then the NEXT sibling
+    // or nearby element has an image.
+    function findByHeadings() {
+      const found = {};
+      for (const tag of ['h1','h2','h3','h4','h5','h6']) {
+        for (const heading of document.querySelectorAll(tag)) {
+          const t = textOf(heading).split('\n')[0].trim();
+          if (!CREDENTIAL_RE.test(t) || !NAME_RE.test(t) || t.length > 80) continue;
+
+          // Look in parent and siblings for an image.
+          const container = heading.parentElement;
+          if (!container) continue;
+          const src = bestSrc(container);
+          if (src) { found[t] = src; continue; }
+
+          // Try grandparent.
+          const gp = container.parentElement;
+          if (gp && gp.querySelectorAll('img').length <= 4) {
+            const gpSrc = bestSrc(gp);
+            if (gpSrc) found[t] = gpSrc;
+          }
         }
       }
-      return el.innerText.split(/\n/)[0].replace(/\s+/g, ' ').trim();
+      return found;
     }
 
-    // ── Strategy 1: look for Divi / Elementor / Genesis team-member blocks ──
-    const CARD_SELECTORS = [
-      '.et_pb_team_member',
-      '.elementor-widget-team-member',
-      '[class*="team-member"]',
-      '[class*="TeamMember"]',
-      '[class*="faculty-member"]',
-      '[class*="faculty_member"]',
-      '[class*="faculty-card"]',
-      '[class*="staff-member"]',
-      '.person',
-      '.people-item',
-      '.member',
-    ];
-    for (const sel of CARD_SELECTORS) {
-      const cards = document.querySelectorAll(sel);
-      if (!cards.length) continue;
-      for (const card of cards) {
-        const name = bestName(card);
-        const img  = absoluteUrl(bestImg(card));
-        if (name && img) result[name] = img;
-      }
-      if (Object.keys(result).length > 0) break;
+    // Strategy A: scan all imgs, find nearby credential-bearing name.
+    for (const img of document.querySelectorAll('img')) {
+      const src = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || img.src || '';
+      if (!src || src.startsWith('data:') || src.endsWith('.svg')) continue;
+      if (img.naturalWidth > 0 && img.naturalWidth < 50) continue;
+      const abs = absUrl(src);
+      if (!abs) continue;
+      const name = nearbyName(img);
+      if (name) result[name] = abs;
     }
 
-    // ── Strategy 2: generic article/section blocks that contain a person image + heading ──
+    // Strategy B: scan headings with credentials, find nearby image.
     if (Object.keys(result).length === 0) {
-      const blocks = document.querySelectorAll('article, section, .wp-block-group, li');
-      for (const block of blocks) {
-        const img  = absoluteUrl(bestImg(block));
-        const name = bestName(block);
-        if (!img || !name || name.length < 4 || name.length > 80) continue;
-        // Must look like a person name: 2+ words, starts uppercase.
-        if (/^[A-Z][a-z]/.test(name) && name.split(/\s+/).length >= 2) {
-          result[name] = img;
-        }
-      }
-    }
-
-    // ── Strategy 3: scan all imgs whose alt text looks like a person name ──
-    if (Object.keys(result).length === 0) {
-      for (const img of document.querySelectorAll('img[alt]')) {
-        const alt = img.alt.trim();
-        const src = absoluteUrl(img.getAttribute('data-src') || img.src || '');
-        if (!src || src.startsWith('data:') || alt.length < 4 || alt.length > 80) continue;
-        if (/^[A-Z][a-z]+(\s+[A-Za-z'\-]+){1,4}$/.test(alt)) {
-          result[alt] = src;
-        }
-      }
+      Object.assign(result, findByHeadings());
     }
 
     return result;
@@ -438,7 +541,7 @@ async function scrapeFacultyPhotos(browser) {
 
   await page.close();
 
-  // Normalize keys: build both full-name and last-name indexes.
+  // Build normalized lookup maps: full-name key and last-name key.
   const byFull = {};
   const byLast = {};
   for (const [name, url] of Object.entries(photos)) {
@@ -449,9 +552,9 @@ async function scrapeFacultyPhotos(browser) {
     if (last && !byLast[last]) byLast[last] = url;
   }
 
-  console.log(`Faculty photos scraped: ${Object.keys(byFull).length} (${Object.keys(byLast).length} by last name)`);
+  console.log(`Faculty photos scraped: ${Object.keys(byFull).length} names, ${Object.keys(byLast).length} by last name`);
   if (Object.keys(byLast).length) {
-    console.log('  Last-name index sample:', Object.keys(byLast).slice(0, 5).join(', '));
+    console.log('  Last names:', Object.keys(byLast).slice(0, 8).join(', '));
   }
   return { byFull, byLast };
 }
@@ -465,38 +568,29 @@ async function persistAttendingPhotos({ byFull, byLast }) {
   }
 
   const newFull = {};
-  const newLast = {};
   let hits = 0, skipped = 0;
 
   for (const [key, url] of Object.entries(byFull)) {
     const fileKey = key.replace(/ /g, '-');
-    let pageUrl = url;
     try {
-      pageUrl = await ensurePhotoInPages(fileKey, url, 'photos/attendings');
+      newFull[key] = await ensurePhotoInPages(fileKey, url, 'photos/attendings');
       hits++;
     } catch (err) {
       console.warn(`  Photo persistence failed for "${key}":`, err.message);
+      newFull[key] = url;
       skipped++;
     }
-    newFull[key] = pageUrl;
-    // Update byLast to point to the same persisted URL.
-    const last = key.split(' ').pop(); // normalized key words are sorted; last alphabetically
-    // Rebuild byLast from byFull correctly below.
   }
 
-  // Rebuild byLast from persisted byFull.
-  for (const [name, url] of Object.entries(byFull)) {
-    // `name` here is the normalized (sorted words) key; reconstruct last name
-    // from byLast entries that map to this photo.
-  }
-  // Simpler: rebuild byLast directly.
+  // Rebuild byLast pointing to persisted URLs.
+  const newLast = {};
   for (const [last, origUrl] of Object.entries(byLast)) {
-    // Find the corresponding full key.
+    // Find the full key whose last word matches this last name.
     const fullKey = Object.keys(byFull).find(k => k.split(' ').includes(last));
     newLast[last] = fullKey ? (newFull[fullKey] || origUrl) : origUrl;
   }
 
-  console.log(`Attending photos persisted to GitHub Pages: ${hits} stored, ${skipped} failed/skipped.`);
+  console.log(`Attending photos persisted: ${hits} stored, ${skipped} failed.`);
   return { byFull: newFull, byLast: newLast };
 }
 
@@ -512,16 +606,14 @@ async function getAuth() {
 
 // ── Google Sheets write ───────────────────────────────────────────────────────
 
-async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photoIndex) {
-  const { byFull, byLast, savedPhotos } = photoIndex;
+async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
+  const { byFull, byLast, savedPhotos } = photos;
 
-  // Read header row.
   const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `${ROSTER_TAB}!1:1`,
   });
-  const headers = (headerRes.data.values?.[0] || [])
-    .map(h => String(h).trim().toLowerCase());
+  const headers = (headerRes.data.values?.[0] || []).map(h => String(h).trim().toLowerCase());
 
   const col = name => {
     const i = headers.indexOf(name);
@@ -536,7 +628,6 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photoIndex
   const photoCol = headers.indexOf('photo_url');
   const notesCol = headers.indexOf('notes');
 
-  // Read all rows; preserve existing attending photo_urls.
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows   = allRes.data.values || [];
 
@@ -544,10 +635,10 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photoIndex
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === ATTENDING_ROLE) {
       toDelete.push(i + 1);
-      if (photoCol >= 0) {
+      if (photoCol >= 0 && !savedPhotos[normalizeName(String(rows[i][nameCol] || ''))]) {
         const key   = normalizeName(String(rows[i][nameCol] || ''));
         const photo = String(rows[i][photoCol] || '').trim();
-        if (key && photo && !savedPhotos[key]) savedPhotos[key] = photo;
+        if (key && photo) savedPhotos[key] = photo;
       }
     }
   }
@@ -571,11 +662,10 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photoIndex
 
   if (!entries.length) { console.log('No attending entries to append.'); return 0; }
 
-  // QGenda names are abbreviated (e.g. "C. Bailey") — resolve photos primarily
-  // by last name, with full-name lookup as a secondary check.
+  // QGenda uses abbreviated names ("C. Bailey"); match primarily by last name.
   const resolvePhoto = (name) => {
-    const last = lastName(name);                    // "bailey"
-    const full = normalizeName(name);               // "bailey c" (sorted)
+    const last = lastName(name);
+    const full = normalizeName(name);
     return byFull[full] || byLast[last] || savedPhotos[full] || savedPhotos[last] || '';
   };
 
@@ -602,7 +692,7 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photoIndex
     requestBody: { values: newRows },
   });
 
-  console.log(`Appended ${newRows.length} attending shift rows (${photoHits} with photo_url).`);
+  console.log(`Appended ${newRows.length} attending rows (${photoHits} with photo_url).`);
   return newRows.length;
 }
 
@@ -610,8 +700,7 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photoIndex
 
 async function main() {
   const spreadsheetId = process.env.CANONICAL_SHEET_ID;
-  if (!spreadsheetId)
-    throw new Error('CANONICAL_SHEET_ID env var is required.');
+  if (!spreadsheetId)    throw new Error('CANONICAL_SHEET_ID env var is required.');
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON)
     throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
@@ -622,9 +711,7 @@ async function main() {
   });
 
   let entries = [], rawPhotos = { byFull: {}, byLast: {} };
-
   try {
-    // Run both scrapers in parallel — they use separate pages.
     [entries, rawPhotos] = await Promise.all([
       scrapeQGenda(browser),
       scrapeFacultyPhotos(browser),
@@ -634,10 +721,9 @@ async function main() {
   }
 
   if (!entries.length) {
-    console.warn('WARNING: No attending entries found from QGenda — check qgenda-debug.png artifact.');
+    console.warn('WARNING: No attending entries found — check qgenda-debug.html/txt artifacts.');
   }
 
-  // Persist faculty headshots to GitHub Pages.
   const photos = await persistAttendingPhotos(rawPhotos).catch(err => {
     console.warn('GitHub Pages photo persistence failed:', err.message);
     return rawPhotos;
@@ -647,9 +733,7 @@ async function main() {
   const sheets = google.sheets({ version: 'v4', auth });
 
   const n = await writeAttendingsToSheet(sheets, spreadsheetId, entries, {
-    byFull:      photos.byFull,
-    byLast:      photos.byLast,
-    savedPhotos: {},
+    byFull: photos.byFull, byLast: photos.byLast, savedPhotos: {},
   });
   console.log(`\nDone. ${n} attending shift rows written to sheet.`);
 }

@@ -52,6 +52,9 @@ jobs:
           name: attending-sync-debug
           path: |
             scripts/sync-attendings/qgenda-debug.png
+            scripts/sync-attendings/qgenda-debug.html
+            scripts/sync-attendings/qgenda-debug.txt
             scripts/sync-attendings/faculty-debug.png
+            scripts/sync-attendings/faculty-debug.html
           if-no-files-found: ignore
           retention-days: 7
