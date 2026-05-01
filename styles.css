@@ -144,13 +144,9 @@ main {
 }
 
 .roles {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-
-@media (max-width: 900px) {
-  .roles { grid-template-columns: 1fr; }
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 .role-col h3 {
@@ -163,7 +159,7 @@ main {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 14px;
   min-height: 40px;
 }
@@ -181,7 +177,7 @@ main {
 }
 
 .card__photo {
-  width: min(92%, 220px);
+  width: min(88%, 260px);
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--panel-2) center/cover no-repeat;
@@ -225,7 +221,7 @@ main {
 
 @media (max-width: 600px) {
   .cards { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-  .card__photo { font-size: 48px; }
+  .card__photo { width: min(88%, 180px); font-size: 48px; }
 }
 
 .card--backup {
