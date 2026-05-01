@@ -53,6 +53,11 @@ export const config = {
       // { url: "https://example.org/er-schedule", adapter: "genericTable" },
     ],
 
+    // Published CSV of the "students" tab — used to join headshot URLs onto
+    // student roster rows at render time. File -> Share -> Publish to web ->
+    // select the "students" sheet -> CSV. Leave null to disable.
+    studentsCsvUrl: null,
+
     // Local fallback used when no remote sources return data.
     // Keep this as a relative path so the static site works offline.
     sampleCsvUrl: "sample-data/roster.csv",

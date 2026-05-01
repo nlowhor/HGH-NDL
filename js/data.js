@@ -3,7 +3,7 @@
 // are deduplicated so a staffer appearing in multiple feeds shows once.
 
 import { config } from "./config.js";
-import { fetchSheetRoster } from "./sources/sheet.js";
+import { fetchSheetRoster, fetchStudentDirectory } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
 import { fetchWebsiteRoster } from "./sources/web.js";
 
@@ -72,6 +72,24 @@ export async function loadAllRosters({ demoMode = false } = {}) {
   }
 
   const rows = dedupe(buckets.flat());
+
+  // Enrich student rows with photos from the student directory tab.
+  if (src.studentsCsvUrl) {
+    try {
+      const studentDir = await fetchStudentDirectory(src.studentsCsvUrl);
+      if (studentDir.size) {
+        for (const r of rows) {
+          if (r.role === "student" && !r.photo_url) {
+            const key = r.name.toLowerCase().trim().split(/\s+/).sort().join(" ");
+            r.photo_url = studentDir.get(key) || "";
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[students] directory load failed:", err.message);
+    }
+  }
+
   return { rows, diagnostics };
 }
 

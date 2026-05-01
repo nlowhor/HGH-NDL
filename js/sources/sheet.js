@@ -40,6 +40,25 @@ function rewritePhotoUrl(url) {
   return url;
 }
 
+function normalizeStudentName(s) {
+  return String(s || "").toLowerCase().trim().split(/\s+/).sort().join(" ");
+}
+
+export async function fetchStudentDirectory(url) {
+  if (!url) return new Map();
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Student directory fetch failed: HTTP ${res.status}`);
+  const rows = parseCsv(await res.text());
+  const map = new Map();
+  for (const r of rows) {
+    const name = (r.name || "").trim();
+    const photo = rewritePhotoUrl((r.photo_url || "").trim());
+    if (name && photo) map.set(normalizeStudentName(name), photo);
+  }
+  console.log(`[students] directory: ${map.size} entries`);
+  return map;
+}
+
 export async function fetchSheetRoster(url) {
   if (!url) return [];
   const res = await fetch(url, { cache: "no-store" });

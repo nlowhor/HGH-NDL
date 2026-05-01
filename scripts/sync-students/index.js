@@ -277,7 +277,7 @@ async function fetchStudentPhotos() {
       if (!name) continue;
 
       console.log(`  ${name} → ${photoUrl.slice(0, 80)}`);
-      byFullName.set(normalizeName(name), photoUrl);
+      byFullName.set(normalizeName(name), { name, url: photoUrl });
       // Index every word so last-name-only schedule entries can match.
       for (const word of name.toLowerCase().split(/\s+/)) {
         if (word.length > 2) byLastName.set(word, photoUrl);
@@ -377,7 +377,7 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     const normalName = normalizeName(e.name);
     // Try full-name match first, then last-name-only (schedule may only have last name).
     const lastName = e.name.trim().split(/\s+/).pop().toLowerCase();
-    const photo = byFullName.get(normalName) || byLastName.get(lastName) || '';
+    const photo = byFullName.get(normalName)?.url || byLastName.get(lastName) || '';
     if (photo) photoHits++;
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
@@ -399,6 +399,63 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   return newRows.length;
 }
 
+// ── Google Sheets — write students directory tab ──────────────────────────────
+
+const STUDENTS_TAB = 'students';
+
+async function writeStudentsTab(auth, spreadsheetId, photos) {
+  const { byFullName } = photos instanceof Map
+    ? { byFullName: new Map() }
+    : photos;
+
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  // Ensure the tab exists (create it if missing).
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const existing = meta.data.sheets.find(s => s.properties.title === STUDENTS_TAB);
+  if (!existing) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title: STUDENTS_TAB } } }] },
+    });
+    console.log(`Created "${STUDENTS_TAB}" tab.`);
+  }
+
+  // Build rows: header + one per student (sorted by name).
+  const entries = Array.from(byFullName.values()).sort((a, b) => a.name.localeCompare(b.name));
+  const rows = [
+    ['name', 'photo_url'],
+    ...entries.map(e => [e.name, e.url]),
+  ];
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${STUDENTS_TAB}!A1`,
+    valueInputOption: 'RAW',
+    requestBody: { values: rows },
+  });
+
+  // Clear any stale rows below the new data.
+  if (existing) {
+    const oldRowCount = existing.properties.gridProperties?.rowCount || 0;
+    if (oldRowCount > rows.length) {
+      const sheetId = existing.properties.sheetId;
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [{
+            deleteDimension: {
+              range: { sheetId, dimension: 'ROWS', startIndex: rows.length, endIndex: oldRowCount },
+            },
+          }],
+        },
+      });
+    }
+  }
+
+  console.log(`"${STUDENTS_TAB}" tab: wrote ${entries.length} student record(s).`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -418,8 +475,11 @@ async function main() {
   ]);
 
   console.log(`\nSchedule entries: ${entries.length}, photos: ${photos.byFullName.size}`);
-  const n = await writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos);
-  console.log(`\nDone. ${n} student row(s) written to canonical sheet.`);
+  await Promise.all([
+    writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos),
+    writeStudentsTab(auth, process.env.CANONICAL_SHEET_ID, photos),
+  ]);
+  console.log(`\nDone.`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });
