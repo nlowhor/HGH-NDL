@@ -53,7 +53,12 @@ export async function fetchStudentDirectory(url) {
   for (const r of rows) {
     const name = (r.name || "").trim();
     const photo = rewritePhotoUrl((r.photo_url || "").trim());
-    if (name && photo) map.set(normalizeStudentName(name), photo);
+    if (!name || !photo) continue;
+    // Index by sorted full name ("arellano elena") for full-name matches.
+    map.set(normalizeStudentName(name), photo);
+    // Also index by last word alone so schedule last-name-only entries match.
+    const words = name.toLowerCase().trim().split(/\s+/);
+    map.set(words[words.length - 1], photo);
   }
   console.log(`[students] directory: ${map.size} entries`);
   return map;

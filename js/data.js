@@ -80,8 +80,11 @@ export async function loadAllRosters({ demoMode = false } = {}) {
       if (studentDir.size) {
         for (const r of rows) {
           if (r.role === "student" && !r.photo_url) {
-            const key = r.name.toLowerCase().trim().split(/\s+/).sort().join(" ");
-            r.photo_url = studentDir.get(key) || "";
+            const words = r.name.toLowerCase().trim().split(/\s+/);
+            // Try sorted full name first, then last word only (schedule may use last name only).
+            const fullKey = [...words].sort().join(" ");
+            const lastKey = words[words.length - 1];
+            r.photo_url = studentDir.get(fullKey) || studentDir.get(lastKey) || "";
           }
         }
       }

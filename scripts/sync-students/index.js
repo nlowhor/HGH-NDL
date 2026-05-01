@@ -293,6 +293,15 @@ async function fetchStudentPhotos() {
 
 // Extract a clean student name from an Airtable record's fields object.
 function extractName(fields) {
+  // Strategy 0: explicit "First Name" + "Last Name" fields → "First Last"
+  let firstName = null, lastName = null;
+  for (const [k, v] of Object.entries(fields)) {
+    if (/^first\s*name$/i.test(k) && typeof v === 'string' && v.trim()) firstName = v.trim();
+    if (/^last\s*name$/i.test(k)  && typeof v === 'string' && v.trim()) lastName  = v.trim();
+  }
+  if (firstName && lastName) return `${firstName} ${lastName}`;
+  if (firstName || lastName) return (firstName || lastName);
+
   // Strategy 1: lookup field — "Name (from Student)" or similar lookup.
   for (const [k, v] of Object.entries(fields)) {
     if (/name.*from|from.*name/i.test(k) && Array.isArray(v) && typeof v[0] === 'string') {
