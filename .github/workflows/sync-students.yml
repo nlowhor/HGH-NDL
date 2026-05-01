@@ -2,8 +2,8 @@ name: Sync Student Schedule and Photos
 
 on:
   schedule:
-    # Runs daily at 6 AM Pacific (14:00 UTC).
-    - cron: '0 14 * * *'
+    # Runs every hour to keep Airtable photo CDN URLs fresh (~2 h expiry).
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:
