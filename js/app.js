@@ -82,7 +82,7 @@ function personCard(row, seniorResidents = []) {
   const meta = [row.title, row.notes].filter(Boolean).join(" · ");
   let pairLine = null;
   if (row.role === "student" && seniorResidents.length) {
-    const names = seniorResidents.map((r) => r.name).join(" or ");
+    const names = seniorResidents.map((r) => r.name.split(/\s+/)[0]).join(" or ");
     pairLine = el("div", { class: "card__pair" }, `Paired with ${names}`);
   }
   return el("div", { class: backup ? "card card--backup" : "card" }, [
