@@ -81,11 +81,13 @@ function lastName(s) {
 // Parse QGenda header text → "YYYY-MM-DD" or null.
 const MONTH_NUM = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
 function parseDateHeader(text) {
-  const m = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})(?:[,\s]+(\d{4}))?/i);
+  // Optional day-of-week prefix (full or 3-letter) handles concatenated format
+  // like "MONAPR27", "FRIDAYMAY1", "SATMAY2" where \b won't fire between letter runs.
+  const m = text.match(/(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*(\d{1,2})(?:[,\s]+(\d{4}))?/i);
   if (!m) return null;
-  const mon = MONTH_NUM[m[1].toLowerCase().slice(0,3)];
-  const day = parseInt(m[2], 10);
-  let year  = m[3] ? parseInt(m[3], 10) : new Date().getFullYear();
+  const mon = MONTH_NUM[m[2].toLowerCase().slice(0,3)];
+  const day = parseInt(m[3], 10);
+  let year  = m[4] ? parseInt(m[4], 10) : new Date().getFullYear();
   // Roll over to next year if date is far in the past.
   const probe = new Date(`${year}-${String(mon).padStart(2,'0')}-${String(day).padStart(2,'0')}`);
   if (probe < new Date(Date.now() - 90 * 86400_000)) year++;
@@ -325,7 +327,13 @@ function parseQGendaText(text, fromDate, toDate) {
     if (!currentDate || currentDate < fromDate || currentDate > toDate) continue;
 
     // ── Step 3: Shift label, time, or provider name.
-    if (SHIFT_LABEL_RE.test(line)) { currentLabel = line; currentTime = ''; continue; }
+    if (SHIFT_LABEL_RE.test(line)) {
+      currentLabel = line;
+      // Extract embedded start time from label: "Day A7a - 4p" → "7a", "Night11p - 8a" → "11p".
+      const tm = line.match(/(\d{1,2}[ap])\s*[-–]/i);
+      currentTime = tm ? tm[1] : '';
+      continue;
+    }
 
     const tm = line.match(TIME_RE);
     if (tm) { currentTime = tm[1]; continue; }
