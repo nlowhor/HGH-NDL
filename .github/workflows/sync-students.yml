@@ -4,12 +4,12 @@ on:
   schedule:
     # Runs daily at 6 AM Pacific (14:00 UTC).
     - cron: '0 14 * * *'
-  workflow_dispatch: # Allow manual trigger from Actions tab.
+  workflow_dispatch:
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
@@ -32,15 +32,5 @@ jobs:
           CANONICAL_SHEET_ID:           ${{ secrets.CANONICAL_SHEET_ID }}
           STUDENT_SCHEDULE_SHEET_ID:    ${{ secrets.STUDENT_SCHEDULE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON:  ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          AIRTABLE_API_KEY:             ${{ secrets.AIRTABLE_API_KEY }}
         run: node index.js
-
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: airtable-debug
-          path: |
-            scripts/sync-students/airtable-debug.png
-            scripts/sync-students/airtable-debug.html
-          if-no-files-found: ignore
-          retention-days: 7

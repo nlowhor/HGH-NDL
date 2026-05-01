@@ -3,26 +3,23 @@
 /**
  * HGH Student Schedule + Photo Sync
  * -----------------------------------
- * 1. Reads all tabs of the student clerkship schedule Google Sheet.
- *    Each tab is a rotation block laid out as a visual calendar.
- *    Parses shift assignments into flat { date, shift, role, name, notes }
- *    rows for the configured date window.
- * 2. Opens the Airtable shared view with Puppeteer and extracts student
- *    headshot URLs.  Attaches photos to matching schedule entries.
+ * 1. Reads all rotation-block tabs of the student clerkship schedule Google
+ *    Sheet (visual calendar layout) and extracts shift assignments for the
+ *    configured date window.
+ * 2. Fetches student headshot URLs from Airtable via the REST API.
  * 3. Replaces all student rows in the canonical roster Google Sheet.
  *
  * Required env vars:
  *   CANONICAL_SHEET_ID          – roster sheet to write to
  *   STUDENT_SCHEDULE_SHEET_ID   – clerkship schedule sheet to read from
  *   GOOGLE_SERVICE_ACCOUNT_JSON – service account credentials
- *
- * Runs in GitHub Actions on a daily schedule. Can also be run locally.
+ *   AIRTABLE_API_KEY            – Airtable personal access token
  */
 
-const puppeteer  = require('puppeteer');
 const { google } = require('googleapis');
 
-const AIRTABLE_URL = 'https://airtable.com/appXHrYewBeH8Rwmh/shrXE7nBIQyO13XMz?1zeMd=sfsxe9QCVDzQPlLNf';
+const AIRTABLE_BASE_ID = 'appXHrYewBeH8Rwmh';
+const AIRTABLE_API     = 'https://api.airtable.com/v0';
 
 const ROSTER_TAB   = 'roster';
 const STUDENT_ROLE = 'student';
@@ -42,7 +39,6 @@ function normalizeName(s) {
     .join(' ');
 }
 
-// Map shift label text → canonical shift name + notes string.
 const SHIFT_LABEL_MAP = {
   'RN DAY':     { shift: 'day',     notes: 'RN Day' },
   'DAY-BUP':    { shift: 'day',     notes: 'Day-BUP' },
@@ -54,21 +50,14 @@ const SHIFT_LABEL_MAP = {
   'NIGHTS':     { shift: 'night',   notes: '' },
 };
 
-// Labels that occupy a shift-type cell but are NOT student assignments.
 const SKIP_LABEL = /^(orientation|bridge|conference|lecture|holiday|off|em |bup$)/i;
-
-// Slot placeholders or affiliation labels that appear in the name column but
-// are not real student names (e.g. "Student 2", "UCSF 1").
-const SKIP_NAME = /^(student|ucsf|ms|slot|resident|attending)\s*\d*$/i;
+const SKIP_NAME  = /^(student|ucsf|ms|slot|resident|attending)\s*\d*$/i;
 
 const DAY_NAMES = ['MON', 'TUES', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
-// Parse a cell value into an ISO date string, given a hint year.
 function parseDate(val, hintYear) {
   if (!val) return null;
   const s = String(val).trim();
-
-  // "May-4" or "May 4"
   const monthDay = s.match(/^([A-Za-z]+)[\s\-](\d{1,2})$/);
   if (monthDay) {
     const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
@@ -78,22 +67,17 @@ function parseDate(val, hintYear) {
     const year = hintYear || new Date().getFullYear();
     return `${year}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   }
-
-  // "5/4/26" or "5/4/2026"
   const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (mdy) {
     const year = mdy[3].length === 2 ? 2000 + parseInt(mdy[3], 10) : parseInt(mdy[3], 10);
     return `${year}-${String(parseInt(mdy[1], 10)).padStart(2, '0')}-${String(parseInt(mdy[2], 10)).padStart(2, '0')}`;
   }
-
   return null;
 }
 
-// Guess the year from a tab name like "#Block 1 (5/4-5/31/26)" or "2026 #Block 12".
 function yearFromTabName(name) {
   const m4 = name.match(/\b(20\d{2})\b/);
   if (m4) return parseInt(m4[1], 10);
-  // "/YY" at end of a date range
   const m2 = name.match(/\/(\d{2})\b/);
   if (m2) return 2000 + parseInt(m2[1], 10);
   return null;
@@ -105,7 +89,6 @@ function parseScheduleTab(rows, tabName) {
   const hintYear = yearFromTabName(tabName);
   const entries  = [];
 
-  // Find "Rotation Start Date" to use as year anchor.
   let rotationYear = hintYear;
   for (const row of rows) {
     for (let c = 0; c < row.length - 1; c++) {
@@ -121,8 +104,7 @@ function parseScheduleTab(rows, tabName) {
   while (i < rows.length) {
     const row = rows[i] || [];
 
-    // Detect a day-header row: contains ≥ 3 recognised day-of-week names.
-    const dayPositions = {}; // 'MON' → column index
+    const dayPositions = {};
     for (let c = 0; c < row.length; c++) {
       const v = String(row[c] || '').trim().toUpperCase();
       if (DAY_NAMES.includes(v)) dayPositions[v] = c;
@@ -130,21 +112,16 @@ function parseScheduleTab(rows, tabName) {
 
     if (Object.keys(dayPositions).length < 3) { i++; continue; }
 
-    // The row immediately after the day headers contains the dates.
-    // (Sometimes "WEEK N" appears in col B of that row — skip it.)
     const dateRow = rows[i + 1] || [];
-    const dateMap = {}; // 'MON' → ISO date
+    const dateMap = {};
     for (const [day, col] of Object.entries(dayPositions)) {
       const d = parseDate(String(dateRow[col] || ''), rotationYear);
       if (d) dateMap[day] = d;
     }
 
-    // Scan data rows until the next day-header block.
     let j = i + 2;
     while (j < rows.length) {
       const dataRow = rows[j] || [];
-
-      // Stop if this row looks like another day-header row.
       const dayCount = dataRow.filter(v =>
         DAY_NAMES.includes(String(v || '').trim().toUpperCase())
       ).length;
@@ -153,82 +130,54 @@ function parseScheduleTab(rows, tabName) {
       for (const [day, col] of Object.entries(dayPositions)) {
         const date = dateMap[day];
         if (!date) continue;
-
         const rawLabel = String(dataRow[col]     || '').trim();
         const rawName  = String(dataRow[col + 1] || '').trim();
-
         if (!rawLabel || !rawName) continue;
         if (SKIP_LABEL.test(rawLabel)) continue;
         if (SKIP_LABEL.test(rawName))  continue;
         if (SKIP_NAME.test(rawName))   continue;
-
         const mapped = SHIFT_LABEL_MAP[rawLabel.toUpperCase()];
         if (!mapped) continue;
-
-        entries.push({
-          date,
-          shift:     mapped.shift,
-          role:      STUDENT_ROLE,
-          name:      rawName,
-          title:     '',
-          notes:     mapped.notes,
-          photo_url: '',
-        });
+        entries.push({ date, shift: mapped.shift, role: STUDENT_ROLE,
+          name: rawName, title: '', notes: mapped.notes, photo_url: '' });
       }
-
       j++;
     }
-
     i = j;
   }
 
   return entries;
 }
 
-// ── Google Sheets — read student schedule ────────────────────────────────────
+// ── Google Sheets — read student schedule ─────────────────────────────────────
 
 async function fetchStudentSchedule(auth) {
   const scheduleSheetId = process.env.STUDENT_SCHEDULE_SHEET_ID;
   if (!scheduleSheetId) throw new Error('STUDENT_SCHEDULE_SHEET_ID env var is required.');
 
   const sheets = google.sheets({ version: 'v4', auth });
+  const meta   = await sheets.spreadsheets.get({ spreadsheetId: scheduleSheetId });
+  const allTabs = meta.data.sheets.map(s => ({ id: s.properties.sheetId, title: s.properties.title }));
+  console.log(`Schedule sheet tabs: ${allTabs.map(t => t.title).join(', ')}`);
 
-  // List all tabs.
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: scheduleSheetId });
-  const allTabs = meta.data.sheets.map(s => ({
-    id:    s.properties.sheetId,
-    title: s.properties.title,
-  }));
-  console.log(`Schedule sheet has ${allTabs.length} tab(s): ${allTabs.map(t => t.title).join(', ')}`);
-
-  // Only parse tabs that look like rotation blocks.
   const tabs = allTabs.filter(t => /block/i.test(t.title));
   console.log(`Rotation block tabs: ${tabs.map(t => t.title).join(', ')}`);
 
-  // Date window.
-  const today = new Date();
-  const from  = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
-  const to    = new Date(today); to.setDate(to.getDate() + DAYS_AHEAD);
+  const today   = new Date();
+  const from    = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
+  const to      = new Date(today); to.setDate(to.getDate() + DAYS_AHEAD);
   const fromIso = from.toISOString().slice(0, 10);
   const toIso   = to.toISOString().slice(0, 10);
 
   const allEntries = [];
-
   for (const tab of tabs) {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: scheduleSheetId,
-      range: tab.title,
-    });
-    const rows    = res.data.values || [];
-    const entries = parseScheduleTab(rows, tab.title);
-
-    // Filter to the date window.
+    const res     = await sheets.spreadsheets.values.get({ spreadsheetId: scheduleSheetId, range: tab.title });
+    const entries = parseScheduleTab(res.data.values || [], tab.title);
     const inWindow = entries.filter(e => e.date >= fromIso && e.date <= toIso);
-    console.log(`  ${tab.title}: ${entries.length} entries parsed, ${inWindow.length} in window.`);
+    console.log(`  ${tab.title}: ${entries.length} parsed, ${inWindow.length} in window.`);
     allEntries.push(...inWindow);
   }
 
-  // Deduplicate by date+shift+name.
   const seen = new Set();
   const deduped = allEntries.filter(e => {
     const key = `${e.date}|${e.shift}|${e.name.toLowerCase()}`;
@@ -240,170 +189,64 @@ async function fetchStudentSchedule(auth) {
   return deduped;
 }
 
-// ── Airtable photo scraping ───────────────────────────────────────────────────
+// ── Airtable REST API — fetch student photos ──────────────────────────────────
 
 async function fetchStudentPhotos() {
-  console.log('\nLaunching Puppeteer for Airtable photos…');
-  const browser = await puppeteer.launch({
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    headless: 'new',
-  });
-  const page = await browser.newPage();
-  page.setDefaultTimeout(60_000);
-
-  const apiPayloads = [];
-  page.on('response', async (response) => {
-    if (!response.url().includes('airtable.com')) return;
-    if (!(response.headers()['content-type'] || '').includes('application/json')) return;
-    try { apiPayloads.push(await response.json()); } catch (_) {}
-  });
-
-  try {
-    console.log('Navigating to Airtable shared view…');
-    await page.goto(AIRTABLE_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
-
-    // Dismiss cookie consent popup if present.
-    try {
-      await page.waitForSelector('[aria-label="Close"], button[data-testid="close-button"], .cookie-dialog button', { timeout: 5000 });
-      await page.click('[aria-label="Close"], button[data-testid="close-button"], .cookie-dialog button');
-      console.log('Cookie dialog dismissed.');
-    } catch (_) { /* no popup, continue */ }
-
-    // Wait for gallery cards to render, then scroll to trigger lazy-loading.
-    await page.waitForSelector('img', { timeout: 15000 }).catch(() => {});
-    await new Promise(r => setTimeout(r, 2000));
-
-    // Scroll through the full page in steps so lazy-loaded cards appear.
-    await page.evaluate(async () => {
-      const delay = ms => new Promise(r => setTimeout(r, ms));
-      const scrollable = document.scrollingElement || document.body;
-      const step = window.innerHeight * 0.8;
-      while (scrollable.scrollTop + window.innerHeight < scrollable.scrollHeight) {
-        scrollable.scrollTop += step;
-        await delay(600);
-      }
-      scrollable.scrollTop = 0; // scroll back to top
-      await delay(500);
-    });
-    await new Promise(r => setTimeout(r, 1500));
-    await page.screenshot({ path: 'airtable-debug.png', fullPage: true });
-
-    // Strategy 1: intercept API payloads.
-    const photos = extractPhotosFromPayloads(apiPayloads);
-    if (photos.size) {
-      console.log(`Airtable: ${photos.size} photo(s) from API payloads.`);
-      return photos;
-    }
-
-    // Strategy 2: gallery-view DOM extraction.
-    // Each card in a gallery has an attachment image and a primary-field text node.
-    const domPhotos = await page.evaluate(() => {
-      const out = {};
-
-      // Airtable gallery cards are typically direct children of a gallery container.
-      // Try multiple selector patterns across Airtable versions.
-      const cardSelectors = [
-        '[data-testid="gallery-card"]',
-        '.galleryCard',
-        '[class*="galleryCard"]',
-        '[class*="gallery-card"]',
-        '[class*="GalleryCard"]',
-      ];
-
-      let cards = [];
-      for (const sel of cardSelectors) {
-        cards = Array.from(document.querySelectorAll(sel));
-        if (cards.length) break;
-      }
-
-      // Fallback: any element containing both an <img> and visible text.
-      if (!cards.length) {
-        cards = Array.from(document.querySelectorAll('li, article, [role="listitem"]'))
-          .filter(el => el.querySelector('img'));
-      }
-
-      for (const card of cards) {
-        const img = card.querySelector('img[src]');
-        if (!img || /brand|logo|icon|avatar-default/i.test(img.src)) continue;
-
-        // Primary field is usually the first non-empty text node in the card.
-        const allText = Array.from(card.querySelectorAll('*'))
-          .map(el => el.childNodes)
-          .reduce((a, b) => [...a, ...b], [])
-          .filter(n => n.nodeType === 3) // text nodes only
-          .map(n => n.textContent.trim())
-          .filter(t => t && /^[A-Za-z]/.test(t) && t.length > 1);
-
-        // Accept single last-names too (e.g. "Arellano"), not just "First Last".
-        const name = allText.find(t => /^[A-Za-z][A-Za-z\s\-']+$/.test(t) && t.length > 2)
-          || card.textContent.trim().split('\n').map(s => s.trim())
-               .find(s => /^[A-Za-z][A-Za-z\s\-']+$/.test(s) && s.length > 2);
-
-        if (name && img.src) out[name] = img.src;
-      }
-      return out;
-    });
-
-    const domMap = new Map(Object.entries(domPhotos));
-    if (domMap.size) {
-      console.log(`Airtable: ${domMap.size} photo(s) from gallery DOM.`);
-      return domMap;
-    }
-
-    require('fs').writeFileSync('airtable-debug.html', await page.content());
-    console.warn('Airtable: no photos found. Saved airtable-debug.html for inspection.');
+  const apiKey = process.env.AIRTABLE_API_KEY;
+  if (!apiKey) {
+    console.warn('AIRTABLE_API_KEY not set — skipping photo fetch.');
     return new Map();
-
-  } finally {
-    await browser.close();
   }
-}
 
-function extractPhotosFromPayloads(payloads) {
-  const photos = new Map(); // normalised name → url
-  for (const json of payloads) {
-    const records = (
-      json.data?.tableData?.rows ||
-      json.data?.rows ||
-      json.rows ||
-      json.records ||
-      []
-    );
-    if (!records.length) continue;
+  const headers = { Authorization: `Bearer ${apiKey}` };
 
-    console.log(`  Payload has ${records.length} record(s). Inspecting first record fields…`);
-    const sampleFields = records[0]?.cellValuesByColumnId || records[0]?.fields || records[0];
-    if (sampleFields && typeof sampleFields === 'object') {
-      for (const [k, v] of Object.entries(sampleFields)) {
-        console.log(`    field ${k}: ${JSON.stringify(v)?.slice(0, 120)}`);
-      }
-    }
+  // Discover the table that has attachment fields (headshots).
+  console.log('\nFetching Airtable table metadata…');
+  const metaRes = await fetch(`${AIRTABLE_API}/meta/bases/${AIRTABLE_BASE_ID}/tables`, { headers });
+  if (!metaRes.ok) throw new Error(`Airtable metadata API ${metaRes.status}: ${await metaRes.text()}`);
+  const { tables } = await metaRes.json();
 
-    for (const record of records) {
-      const fields = record.cellValuesByColumnId || record.fields || record;
-      if (typeof fields !== 'object') continue;
-      const values = Object.values(fields);
+  const table = tables.find(t => t.fields.some(f => f.type === 'multipleAttachments'));
+  if (!table) throw new Error('No table with attachment fields found in Airtable base.');
+  console.log(`Using table: "${table.name}" (${table.id})`);
 
-      // Accept any string field that looks like a name (1+ words, letters only).
-      // Intentionally broad — single last-names like "Arellano" are valid.
-      const nameField = values.find(v =>
-        typeof v === 'string' && /^[A-Za-z][A-Za-z\s\-',.]+$/.test(v.trim()) && v.trim().length > 1
+  // Log field names for debugging.
+  console.log(`Fields: ${table.fields.map(f => `${f.name} (${f.type})`).join(', ')}`);
+
+  // Fetch all records, handling pagination.
+  const photos = new Map();
+  let offset;
+  do {
+    const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${table.id}`);
+    if (offset) url.searchParams.set('offset', offset);
+
+    const res = await fetch(url.toString(), { headers });
+    if (!res.ok) throw new Error(`Airtable records API ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+
+    for (const record of data.records || []) {
+      const fields = record.fields;
+
+      // Find the primary name field (a non-empty string).
+      const nameEntry = Object.entries(fields).find(([, v]) =>
+        typeof v === 'string' && v.trim().length > 1
       );
-      if (!nameField) continue;
+      // Find the attachment field.
+      const photoEntry = Object.entries(fields).find(([, v]) =>
+        Array.isArray(v) && v[0]?.url
+      );
 
-      let url = '';
-      for (const v of values) {
-        if (typeof v === 'string' && /^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)/i.test(v)) { url = v; break; }
-        if (Array.isArray(v) && v[0]?.thumbnails?.large?.url) { url = v[0].thumbnails.large.url; break; }
-        if (Array.isArray(v) && v[0]?.url) { url = v[0].url; break; }
-      }
-      if (url) {
-        console.log(`  Photo matched: "${nameField}" → ${url.slice(0, 80)}`);
-        photos.set(normalizeName(nameField), url);
-      }
+      if (!nameEntry || !photoEntry) continue;
+      const name = nameEntry[1].trim();
+      const url  = photoEntry[1][0].thumbnails?.large?.url || photoEntry[1][0].url;
+      console.log(`  ${name} → ${url.slice(0, 80)}`);
+      photos.set(normalizeName(name), url);
     }
-    if (photos.size) break;
-  }
+
+    offset = data.offset;
+  } while (offset);
+
+  console.log(`Airtable: ${photos.size} photo(s) fetched.`);
   return photos;
 }
 
@@ -420,13 +263,8 @@ async function getAuth() {
 async function writeStudentsToSheet(auth, spreadsheetId, entries, photoMap) {
   const sheets = google.sheets({ version: 'v4', auth });
 
-  // Read headers.
-  const headerRes = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${ROSTER_TAB}!1:1`,
-  });
-  const headers = (headerRes.data.values?.[0] || [])
-    .map(h => String(h).trim().toLowerCase());
+  const headerRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${ROSTER_TAB}!1:1` });
+  const headers   = (headerRes.data.values?.[0] || []).map(h => String(h).trim().toLowerCase());
 
   const col = name => {
     const i = headers.indexOf(name);
@@ -441,9 +279,8 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photoMap) {
   const photoCol = headers.indexOf('photo_url');
   const notesCol = headers.indexOf('notes');
 
-  // Delete existing student rows.
-  const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
-  const rows   = allRes.data.values || [];
+  const allRes   = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
+  const rows     = allRes.data.values || [];
   const toDelete = [];
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE)
@@ -452,15 +289,12 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photoMap) {
 
   if (toDelete.length) {
     const meta    = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheetId = meta.data.sheets
-      .find(s => s.properties.title === ROSTER_TAB).properties.sheetId;
+    const sheetId = meta.data.sheets.find(s => s.properties.title === ROSTER_TAB).properties.sheetId;
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: {
         requests: toDelete.reverse().map(rowNum => ({
-          deleteDimension: {
-            range: { sheetId, dimension: 'ROWS', startIndex: rowNum - 1, endIndex: rowNum },
-          },
+          deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: rowNum - 1, endIndex: rowNum } },
         })),
       },
     });
@@ -486,9 +320,7 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photoMap) {
   });
 
   await sheets.spreadsheets.values.append({
-    spreadsheetId,
-    range: ROSTER_TAB,
-    valueInputOption: 'RAW',
+    spreadsheetId, range: ROSTER_TAB, valueInputOption: 'RAW',
     requestBody: { values: newRows },
   });
 
@@ -499,26 +331,21 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photoMap) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  if (!process.env.CANONICAL_SHEET_ID)
-    throw new Error('CANONICAL_SHEET_ID env var is required.');
-  if (!process.env.STUDENT_SCHEDULE_SHEET_ID)
-    throw new Error('STUDENT_SCHEDULE_SHEET_ID env var is required.');
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON)
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
+  if (!process.env.CANONICAL_SHEET_ID)        throw new Error('CANONICAL_SHEET_ID env var is required.');
+  if (!process.env.STUDENT_SCHEDULE_SHEET_ID) throw new Error('STUDENT_SCHEDULE_SHEET_ID env var is required.');
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
   const auth = await getAuth();
 
-  // Run schedule fetch and photo scrape concurrently.
   const [entries, photoMap] = await Promise.all([
     fetchStudentSchedule(auth),
     fetchStudentPhotos().catch(err => {
-      console.warn('Photo scrape failed (continuing without photos):', err.message);
+      console.warn('Photo fetch failed (continuing without photos):', err.message);
       return new Map();
     }),
   ]);
 
-  console.log(`\nSchedule entries: ${entries.length}, photos found: ${photoMap.size}`);
-
+  console.log(`\nSchedule entries: ${entries.length}, photos: ${photoMap.size}`);
   const n = await writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photoMap);
   console.log(`\nDone. ${n} student row(s) written to canonical sheet.`);
 }
