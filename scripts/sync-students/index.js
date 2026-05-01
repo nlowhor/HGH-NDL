@@ -248,7 +248,10 @@ async function fetchStudentPhotos() {
   }
 
   // Fetch all records, handling pagination.
-  const photos = new Map();
+  // Returns { byFullName: Map, byLastName: Map } so callers can try both.
+  const byFullName = new Map(); // normalizeName(full name) → url
+  const byLastName = new Map(); // single lowercased word → url
+
   let offset;
   do {
     const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableId)}`);
@@ -261,27 +264,55 @@ async function fetchStudentPhotos() {
     for (const record of data.records || []) {
       const fields = record.fields;
 
-      // Find the primary name field (a non-empty string).
-      const nameEntry = Object.entries(fields).find(([, v]) =>
-        typeof v === 'string' && v.trim().length > 1
-      );
-      // Find the attachment field.
-      const photoEntry = Object.entries(fields).find(([, v]) =>
-        Array.isArray(v) && v[0]?.url
-      );
+      // Extract photo URL from the first attachment field found.
+      const photoEntry = Object.entries(fields).find(([, v]) => Array.isArray(v) && v[0]?.url);
+      if (!photoEntry) continue;
+      const photoUrl = photoEntry[1][0].thumbnails?.large?.url || photoEntry[1][0].url;
 
-      if (!nameEntry || !photoEntry) continue;
-      const name = nameEntry[1].trim();
-      const url  = photoEntry[1][0].thumbnails?.large?.url || photoEntry[1][0].url;
-      console.log(`  ${name} → ${url.slice(0, 80)}`);
-      photos.set(normalizeName(name), url);
+      // Extract name using several strategies in priority order:
+      // 1. Lookup field named "Name (from Student)" → array of strings
+      // 2. Formula "Name" field → strip embedded phone number
+      // 3. Any singleLineText field whose key contains "name"
+      const name = extractName(fields);
+      if (!name) continue;
+
+      console.log(`  ${name} → ${photoUrl.slice(0, 80)}`);
+      byFullName.set(normalizeName(name), photoUrl);
+      // Index every word so last-name-only schedule entries can match.
+      for (const word of name.toLowerCase().split(/\s+/)) {
+        if (word.length > 2) byLastName.set(word, photoUrl);
+      }
     }
 
     offset = data.offset;
   } while (offset);
 
-  console.log(`Airtable: ${photos.size} photo(s) fetched.`);
-  return photos;
+  console.log(`Airtable: ${byFullName.size} photo(s) fetched.`);
+  return { byFullName, byLastName };
+}
+
+// Extract a clean student name from an Airtable record's fields object.
+function extractName(fields) {
+  // Strategy 1: lookup field — "Name (from Student)" or similar lookup.
+  for (const [k, v] of Object.entries(fields)) {
+    if (/name.*from|from.*name/i.test(k) && Array.isArray(v) && typeof v[0] === 'string') {
+      return v[0].trim();
+    }
+  }
+  // Strategy 2: formula "Name" field — strip trailing phone number pattern.
+  for (const [k, v] of Object.entries(fields)) {
+    if (/^name$/i.test(k) && typeof v === 'string') {
+      const clean = v.replace(/\s*\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}.*$/, '').trim();
+      if (clean.length > 1) return clean;
+    }
+  }
+  // Strategy 3: any text field whose key contains "name" but not email/phone/cell.
+  for (const [k, v] of Object.entries(fields)) {
+    if (/name/i.test(k) && !/email|phone|cell|contact/i.test(k) && typeof v === 'string' && v.trim().length > 1) {
+      return v.trim();
+    }
+  }
+  return null;
 }
 
 // ── Google Sheets — write canonical roster ────────────────────────────────────
@@ -294,7 +325,10 @@ async function getAuth() {
   });
 }
 
-async function writeStudentsToSheet(auth, spreadsheetId, entries, photoMap) {
+async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
+  const { byFullName, byLastName } = photos instanceof Map
+    ? { byFullName: photos, byLastName: new Map() }
+    : photos;
   const sheets = google.sheets({ version: 'v4', auth });
 
   const headerRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${ROSTER_TAB}!1:1` });
@@ -340,7 +374,10 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photoMap) {
   let photoHits = 0;
   const width   = headers.length;
   const newRows = entries.map(e => {
-    const photo = photoMap.get(normalizeName(e.name)) || '';
+    const normalName = normalizeName(e.name);
+    // Try full-name match first, then last-name-only (schedule may only have last name).
+    const lastName = e.name.trim().split(/\s+/).pop().toLowerCase();
+    const photo = byFullName.get(normalName) || byLastName.get(lastName) || '';
     if (photo) photoHits++;
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
@@ -371,16 +408,17 @@ async function main() {
 
   const auth = await getAuth();
 
-  const [entries, photoMap] = await Promise.all([
+  const emptyPhotos = { byFullName: new Map(), byLastName: new Map() };
+  const [entries, photos] = await Promise.all([
     fetchStudentSchedule(auth),
     fetchStudentPhotos().catch(err => {
       console.warn('Photo fetch failed (continuing without photos):', err.message);
-      return new Map();
+      return emptyPhotos;
     }),
   ]);
 
-  console.log(`\nSchedule entries: ${entries.length}, photos: ${photoMap.size}`);
-  const n = await writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photoMap);
+  console.log(`\nSchedule entries: ${entries.length}, photos: ${photos.byFullName.size}`);
+  const n = await writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos);
   console.log(`\nDone. ${n} student row(s) written to canonical sheet.`);
 }
 
