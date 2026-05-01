@@ -221,6 +221,47 @@ async function fetchDrivePhotos(auth, spreadsheetId) {
   return photoMap;
 }
 
+// ── Airtable resident photo lookup ───────────────────────────────────────────
+
+// Fetches the "Resident Roster" table from the ReST Airtable base and returns
+// a map of normalised name → attachment URL. Attachment URLs expire (~2 hours)
+// so this must run at sync time and the URL written directly to the sheet.
+async function fetchAirtableResidentPhotos() {
+  const apiKey = process.env.AIRTABLE_API_KEY;
+  const baseId = process.env.AIRTABLE_RESIDENTS_BASE_ID || 'appKUhwYWruLxO7p2';
+  if (!apiKey) {
+    console.warn('AIRTABLE_API_KEY not set — skipping Airtable photo lookup.');
+    return {};
+  }
+
+  const table = encodeURIComponent('Resident Roster');
+  const fieldParams = ['Full Name', 'Photo']
+    .map(f => `fields[]=${encodeURIComponent(f)}`).join('&');
+
+  const photos = {};
+  let offset;
+  do {
+    const url = `https://api.airtable.com/v0/${baseId}/${table}?${fieldParams}` +
+                (offset ? `&offset=${offset}` : '');
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) throw new Error(`Airtable resident fetch failed: HTTP ${res.status}`);
+    const data = await res.json();
+    for (const record of (data.records || [])) {
+      const name        = record.fields['Full Name'];
+      const attachments = record.fields['Photo'];
+      if (!name || !Array.isArray(attachments) || !attachments.length) continue;
+      const photoUrl = attachments[0].url;
+      if (photoUrl) photos[normalizeName(name)] = photoUrl;
+    }
+    offset = data.offset;
+  } while (offset);
+
+  console.log(`Airtable resident photos: ${Object.keys(photos).length} record(s) indexed.`);
+  return photos;
+}
+
 // ── Google API clients ────────────────────────────────────────────────────────
 
 async function getAuth() {
@@ -236,7 +277,7 @@ async function getAuth() {
 
 // ── Google Sheets write ───────────────────────────────────────────────────────
 
-async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos) {
+async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos = {}) {
   // Read header row.
   const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -297,10 +338,10 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
 
   if (!entries.length) { console.log('No entries to append.'); return 0; }
 
-  // Photo priority: Drive folder match > previously saved in sheet.
+  // Photo priority: Airtable > Drive folder > previously saved in sheet.
   const resolvePhoto = (name) => {
     const key = normalizeName(name);
-    return drivePhotos[key] || savedPhotos[key] || '';
+    return airtablePhotos[key] || drivePhotos[key] || savedPhotos[key] || '';
   };
 
   let photoHits = 0;
@@ -353,13 +394,19 @@ async function main() {
   let drivePhotos = {};
   try {
     drivePhotos = await fetchDrivePhotos(auth, spreadsheetId);
-    const matched = Object.keys(drivePhotos).length;
-    console.log(`Drive photo lookup: ${matched} image(s) indexed.`);
+    console.log(`Drive photo lookup: ${Object.keys(drivePhotos).length} image(s) indexed.`);
   } catch (err) {
     console.warn('Drive photo lookup failed (photos will fall back to saved values):', err.message);
   }
 
-  const n = await writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos);
+  let airtablePhotos = {};
+  try {
+    airtablePhotos = await fetchAirtableResidentPhotos();
+  } catch (err) {
+    console.warn('Airtable resident photo lookup failed:', err.message);
+  }
+
+  const n = await writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos);
   console.log(`\nDone. ${n} resident shift rows written to sheet.`);
 }
 
