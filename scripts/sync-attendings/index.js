@@ -94,23 +94,83 @@ function parseDateHeader(text) {
 
 // ── QGenda API response parser ────────────────────────────────────────────────
 
-// Recursively search a JSON value for arrays of objects that look like schedule tasks.
-function findScheduleArrays(val, depth = 0) {
-  if (depth > 6 || !val || typeof val !== 'object') return [];
-  const results = [];
-  if (Array.isArray(val)) {
-    if (val.length > 0 && typeof val[0] === 'object' && val[0] !== null) {
-      // Does this array look like schedule tasks?
-      const keys = Object.keys(val[0]).join(' ').toLowerCase();
-      if (/date|staff|name|shift|task|assign/i.test(keys)) {
-        results.push(val);
+// Recursively walks any JSON value, threading parent context (date, label, time)
+// downward. Records an entry whenever a node has both a date (from self or ancestor)
+// and a staff name (in self).
+function parseQGendaApiJson(json, fromDate, toDate) {
+  const entries = [];
+  const seen    = new Set();
+
+  function get(obj, ...keys) {
+    for (const k of keys) {
+      const v = obj[k];
+      if (v !== undefined && v !== null && v !== '') return v;
+    }
+    return null;
+  }
+
+  function extractDate(obj) {
+    const raw = get(obj,
+      'date', 'Date', 'taskDate', 'TaskDate', 'startDate', 'StartDate',
+      'scheduleDate', 'ScheduleDate', 'calendarDate', 'CalendarDate',
+      'shiftDate', 'ShiftDate', 'displayDate', 'DisplayDate'
+    );
+    return raw ? parseDateHeader(String(raw)) : null;
+  }
+
+  function extractName(obj) {
+    // Direct name fields (camelCase + PascalCase)
+    const direct = get(obj,
+      'staffName', 'StaffName', 'fullName', 'FullName',
+      'displayName', 'DisplayName', 'providerName', 'ProviderName',
+      'employeeName', 'EmployeeName', 'staffDisplayName', 'StaffDisplayName'
+    );
+    if (direct && typeof direct === 'string') return direct.trim();
+
+    // First + last name
+    const first = get(obj, 'firstName', 'FirstName', 'staffFirstName', 'StaffFirstName', 'first', 'First');
+    const last  = get(obj, 'lastName',  'LastName',  'staffLastName',  'StaffLastName',  'last',  'Last');
+    if (first || last) return [first, last].filter(Boolean).join(' ').trim();
+
+    return null;
+  }
+
+  function extractLabel(obj) {
+    return get(obj, 'taskName', 'TaskName', 'shiftName', 'ShiftName', 'label', 'Label') || null;
+  }
+
+  function extractTime(obj) {
+    return get(obj, 'startTime', 'StartTime', 'start', 'Start', 'time', 'Time') || null;
+  }
+
+  function walk(val, ctx) {
+    if (!val || typeof val !== 'object') return;
+    if (Array.isArray(val)) {
+      for (const item of val) walk(item, ctx);
+      return;
+    }
+    const date  = extractDate(val)  || ctx.date;
+    const label = extractLabel(val) || ctx.label;
+    const time  = extractTime(val)  || ctx.time;
+    const name  = extractName(val);
+
+    if (date && name && date >= fromDate && date <= toDate) {
+      const shift = time ? shiftFromTime(String(time)) : shiftFromLabel(String(label || ''));
+      const key   = `${date}|${shift}|${name.toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        entries.push({ date, shift, name, shiftLabel: String(label || '') });
       }
     }
-    for (const item of val.slice(0, 20)) results.push(...findScheduleArrays(item, depth + 1));
-  } else {
-    for (const v of Object.values(val)) results.push(...findScheduleArrays(v, depth + 1));
+
+    for (const v of Object.values(val)) {
+      if (v && typeof v === 'object') walk(v, { date, label, time });
+    }
   }
-  return results;
+
+  walk(json, {});
+  entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+  return entries;
 }
 
 function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
@@ -119,33 +179,19 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
 
   for (const { url, json } of apiResponses) {
     console.log(`  Parsing API: ${url.slice(0, 100)}`);
-    const arrays = findScheduleArrays(json);
-    console.log(`    Found ${arrays.length} candidate arrays`);
+    // Log first-level structure for debugging.
+    if (json && typeof json === 'object') {
+      const keys = Array.isArray(json)
+        ? `array[${json.length}], item[0] keys: ${json[0] ? Object.keys(json[0]).slice(0,8).join(',') : 'n/a'}`
+        : Object.keys(json).slice(0, 10).join(', ');
+      console.log(`    Structure: ${keys}`);
+    }
 
-    for (const arr of arrays) {
-      for (const item of arr) {
-        // Try to find date, name, and time from various key naming conventions.
-        const itemStr = JSON.stringify(item).toLowerCase();
-        if (!itemStr.includes('date') && !itemStr.includes('name')) continue;
-
-        const dateRaw  = item.date || item.taskDate || item.startDate || item.scheduleDate || '';
-        const nameRaw  = item.staffName || item.name || item.displayName || item.providerName ||
-                         (item.staff && (item.staff.name || item.staff.displayName)) || '';
-        const timeRaw  = item.startTime || item.start || item.time || '';
-        const labelRaw = item.taskName || item.shiftName || item.name || '';
-
-        const date = parseDateHeader(String(dateRaw));
-        if (!date || date < fromDate || date > toDate) continue;
-        if (!nameRaw) continue;
-
-        const shift = timeRaw ? shiftFromTime(String(timeRaw)) : shiftFromLabel(String(labelRaw));
-        const name  = String(nameRaw).trim();
-        const key   = `${date}|${shift}|${name.toLowerCase()}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          entries.push({ date, shift, name, shiftLabel: String(labelRaw) });
-        }
-      }
+    const found = parseQGendaApiJson(json, fromDate, toDate);
+    console.log(`    Entries from this response: ${found.length}`);
+    for (const e of found) {
+      const key = `${e.date}|${e.shift}|${e.name.toLowerCase()}`;
+      if (!seen.has(key)) { seen.add(key); entries.push(e); }
     }
   }
 
@@ -523,38 +569,50 @@ async function scrapeFacultyPhotos(browser) {
     }
 
     // Key insight for this WordPress theme: each faculty card has an <img> and
-    // somewhere nearby a line of text containing a medical credential (MD, DO, etc.).
-    // We find every <img>, then walk up and around its DOM to find the name.
+    // somewhere nearby a line of text with the person's name + credential.
+    // Person names: every word starts with uppercase ("Kevin Gardner, MD").
+    // Job titles: contain lowercase connectives ("Director of Critical Care").
 
     const CREDENTIAL_RE = /\b(md|do|phd|mph|msed?|macm|msc)\b/i;
-    const NAME_RE       = /^[A-Z][a-z]+(\s+[A-Za-z'\-]+){1,4}(,\s*(MD|DO|PhD|MPH|MACM|MSEd?|MSc))?/;
+
+    // A person name has 2–5 words where EVERY word starts with an uppercase letter.
+    // Strip trailing credentials first, then check each remaining word.
+    function isPersonName(text) {
+      // Remove credential suffix (",  MD" / ", PhD" etc.)
+      const clean = text.replace(/[,;]\s*(MD|DO|PhD|MPH|MACM|MSEd?|MSc|MA|MS|PA|RN|NP)(\s+\S+)*$/gi, '').trim();
+      // Remove standalone credential tokens left in the middle.
+      const words = clean.split(/\s+/).filter(w => !/^(md|do|phd|mph|msed?|macm|msc|ma|ms|pa|rn|np)$/i.test(w));
+      if (words.length < 2 || words.length > 5) return false;
+      // Every word must start with uppercase — eliminates "Director of Critical Care".
+      return words.every(w => /^[A-Z]/.test(w));
+    }
 
     function textOf(el) {
       return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
     }
 
-    // Given an element, find nearby text that looks like "FirstName LastName, MD".
+    // Given an img element, walk up the DOM looking for a sibling or ancestor
+    // text node that is a person name (has credential AND every word capitalized).
     function nearbyName(imgEl) {
-      // Walk up the tree, looking within each ancestor for a credential-bearing heading.
       let el = imgEl.parentElement;
       for (let depth = 0; depth < 7 && el; depth++) {
-        // Only consider a container that has few (<= 4) imgs (otherwise too broad).
+        // Skip containers that hold many images (too broad — would match wrong card).
         if (el.querySelectorAll('img').length > 4) { el = el.parentElement; continue; }
 
-        // Look for heading elements within this container.
+        // Prefer heading elements, then strong/b, then any p.
         for (const tag of ['h1','h2','h3','h4','h5','h6','strong','b','p']) {
           for (const node of el.querySelectorAll(tag)) {
             const t = textOf(node).split('\n')[0].trim();
             if (t.length < 4 || t.length > 80) continue;
-            if (CREDENTIAL_RE.test(t) && NAME_RE.test(t)) return t;
+            if (CREDENTIAL_RE.test(t) && isPersonName(t)) return t;
           }
         }
 
-        // Also look at adjacent siblings (next sibling div/p).
+        // Check adjacent siblings.
         for (const sib of [el.nextElementSibling, el.previousElementSibling]) {
           if (!sib) continue;
           const t = textOf(sib).split('\n')[0].trim();
-          if (t.length >= 4 && t.length <= 80 && CREDENTIAL_RE.test(t) && NAME_RE.test(t)) return t;
+          if (t.length >= 4 && t.length <= 80 && CREDENTIAL_RE.test(t) && isPersonName(t)) return t;
         }
 
         el = el.parentElement;
@@ -569,7 +627,7 @@ async function scrapeFacultyPhotos(browser) {
       for (const tag of ['h1','h2','h3','h4','h5','h6']) {
         for (const heading of document.querySelectorAll(tag)) {
           const t = textOf(heading).split('\n')[0].trim();
-          if (!CREDENTIAL_RE.test(t) || !NAME_RE.test(t) || t.length > 80) continue;
+          if (!CREDENTIAL_RE.test(t) || !isPersonName(t) || t.length > 80) continue;
 
           // Look in parent and siblings for an image.
           const container = heading.parentElement;
