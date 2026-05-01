@@ -56,7 +56,11 @@ function isBackup(row) {
   return /backup/i.test(row.notes);
 }
 
-function personCard(row) {
+function isSeniorResident(row) {
+  return row.role === "resident" && /\b(r[34]|pgy-?[34])\b/i.test(row.title || "");
+}
+
+function personCard(row, seniorResidents = []) {
   const backup = isBackup(row);
   const photo = el("div", { class: "card__photo" });
   if (row.photo_url) {
@@ -71,14 +75,20 @@ function personCard(row) {
     photo.textContent = initials(row.name);
   }
   const meta = [row.title, row.notes].filter(Boolean).join(" · ");
+  let pairLine = null;
+  if (row.role === "student" && seniorResidents.length) {
+    const names = seniorResidents.map((r) => r.name.split(/\s+/)[0]).join(" or ");
+    pairLine = el("div", { class: "card__pair" }, `Paired with ${names}`);
+  }
   return el("div", { class: backup ? "card card--backup" : "card" }, [
     photo,
     el("div", { class: "card__name" }, row.name.split(/\s+/)[0]),
     meta ? el("div", { class: "card__meta" }, meta) : null,
+    pairLine,
   ]);
 }
 
-function renderColumn(targetKey, rows) {
+function renderColumn(targetKey, rows, seniorResidents = []) {
   const host = document.querySelector(`[data-target="${targetKey}"]`);
   if (!host) return;
   host.innerHTML = "";
@@ -86,7 +96,7 @@ function renderColumn(targetKey, rows) {
     host.appendChild(el("div", { class: "empty" }, "No one listed."));
     return;
   }
-  for (const r of rows) host.appendChild(personCard(r));
+  for (const r of rows) host.appendChild(personCard(r, seniorResidents));
 }
 
 // ---------- Rendering ----------
@@ -118,9 +128,14 @@ function render() {
   const curGroups = groupByRole(rosterForShift(state.rows, current));
   const nextGroups = groupByRole(rosterForShift(state.rows, next));
 
+  const curSeniors = (curGroups["resident"] || []).filter(isSeniorResident);
+  const nextSeniors = (nextGroups["resident"] || []).filter(isSeniorResident);
+
   for (const role of config.roles) {
-    renderColumn(`current.${role.key}`, curGroups[role.key] || []);
-    renderColumn(`next.${role.key}`, nextGroups[role.key] || []);
+    const cs = role.key === "student" ? curSeniors : [];
+    const ns = role.key === "student" ? nextSeniors : [];
+    renderColumn(`current.${role.key}`, curGroups[role.key] || [], cs);
+    renderColumn(`next.${role.key}`, nextGroups[role.key] || [], ns);
   }
 
   renderStatus();

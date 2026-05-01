@@ -211,6 +211,11 @@ main {
   color: var(--muted);
   font-size: 14px;
 }
+.card__pair {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+}
 
 @media (max-width: 600px) {
   .cards { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
