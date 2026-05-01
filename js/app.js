@@ -73,7 +73,7 @@ function personCard(row) {
   const meta = [row.title, row.notes].filter(Boolean).join(" · ");
   return el("div", { class: backup ? "card card--backup" : "card" }, [
     photo,
-    el("div", { class: "card__name" }, row.name),
+    el("div", { class: "card__name" }, row.name.split(/\s+/)[0]),
     meta ? el("div", { class: "card__meta" }, meta) : null,
   ]);
 }

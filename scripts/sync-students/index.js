@@ -292,7 +292,7 @@ async function fetchStudentPhotos() {
       byFullName.set(normalizeName(name), { name, url: photoUrl });
       // Index every word so last-name-only schedule entries can match.
       for (const word of name.toLowerCase().split(/\s+/)) {
-        if (word.length > 2) byLastName.set(word, photoUrl);
+        if (word.length > 2) byLastName.set(word, { name, url: photoUrl });
       }
     }
 
@@ -396,15 +396,19 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   const width   = headers.length;
   const newRows = entries.map(e => {
     const normalName = normalizeName(e.name);
-    // Try full-name match first, then last-name-only (schedule may only have last name).
-    const lastName = e.name.trim().split(/\s+/).pop().toLowerCase();
-    const photo = byFullName.get(normalName)?.url || byLastName.get(lastName) || '';
+    const lastWord   = e.name.trim().split(/\s+/).pop().toLowerCase();
+    // Try full-name match first, then any-word match (handles first-name or last-name schedules).
+    const match = byFullName.get(normalName) || byLastName.get(lastWord);
+    const photo = match?.url || '';
     if (photo) photoHits++;
+    // When we have an Airtable record, use that name — it's more complete/correct
+    // than whatever abbreviation the schedule used.
+    const rosterName = match ? match.name : e.name;
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = STUDENT_ROLE;
-    row[nameCol]  = e.name;
+    row[nameCol]  = rosterName;
     if (titleCol >= 0) row[titleCol] = e.title || '';
     if (photoCol >= 0) row[photoCol] = photo;
     if (notesCol >= 0) row[notesCol] = e.notes || '';
