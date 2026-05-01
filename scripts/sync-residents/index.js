@@ -15,8 +15,9 @@
  *   CANONICAL_SHEET_ID=... GOOGLE_SERVICE_ACCOUNT_JSON='...' node index.js
  */
 
-const puppeteer  = require('puppeteer');
-const { google } = require('googleapis');
+const puppeteer    = require('puppeteer');
+const { google }   = require('googleapis');
+const { Readable } = require('stream');
 
 const MEDREZ_GROUP = '9s733y77k';
 const MEDREZ_URL   = `https://www.medrez.net/view.php?a=${MEDREZ_GROUP}`;
@@ -166,28 +167,28 @@ function buildEntries(staffsData, schedData) {
 
 // ── Google Drive photo lookup ─────────────────────────────────────────────────
 
-// Returns a map of normalised name → Drive thumbnail URL for every image file
-// found in the folder that contains the sheet (or DRIVE_FOLDER_ID if provided).
-async function fetchDrivePhotos(auth, spreadsheetId) {
-  const drive = google.drive({ version: 'v3', auth });
+async function getDriveFolderId(drive, spreadsheetId) {
+  if (process.env.DRIVE_FOLDER_ID) {
+    console.log(`Using DRIVE_FOLDER_ID: ${process.env.DRIVE_FOLDER_ID}`);
+    return process.env.DRIVE_FOLDER_ID;
+  }
+  console.log('Looking up parent folder of the sheet…');
+  const meta = await drive.files.get({ fileId: spreadsheetId, fields: 'parents' });
+  const parents = meta.data.parents || [];
+  if (!parents.length) throw new Error('Sheet has no parent Drive folder.');
+  console.log(`Parent folder ID: ${parents[0]}`);
+  return parents[0];
+}
 
-  // Find the parent folder of the sheet (unless overridden).
-  let folderId = process.env.DRIVE_FOLDER_ID;
-  if (!folderId) {
-    console.log('Looking up parent folder of the sheet…');
-    const meta = await drive.files.get({
-      fileId: spreadsheetId,
-      fields: 'parents',
-    });
-    const parents = meta.data.parents || [];
-    if (!parents.length) {
-      console.warn('Sheet has no parent folder — skipping Drive photo lookup.');
-      return {};
-    }
-    folderId = parents[0];
-    console.log(`Parent folder ID: ${folderId}`);
-  } else {
-    console.log(`Using DRIVE_FOLDER_ID: ${folderId}`);
+// Returns { photos, folderId } — photos maps normalised name → Drive thumbnail URL.
+async function fetchDrivePhotos(auth, spreadsheetId) {
+  const drive    = google.drive({ version: 'v3', auth });
+  let   folderId;
+  try {
+    folderId = await getDriveFolderId(drive, spreadsheetId);
+  } catch (err) {
+    console.warn('Could not find Drive folder — skipping Drive photo lookup:', err.message);
+    return { photos: {}, folderId: null };
   }
 
   // List image files in the folder.
@@ -218,7 +219,7 @@ async function fetchDrivePhotos(auth, spreadsheetId) {
     const key = normalizeName(f.name);
     photoMap[key] = `https://drive.google.com/thumbnail?id=${f.id}&sz=w400`;
   }
-  return photoMap;
+  return { photos: photoMap, folderId };
 }
 
 // ── Airtable resident photo lookup ───────────────────────────────────────────
@@ -270,9 +271,37 @@ async function getAuth() {
     credentials: key,
     scopes: [
       'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/drive',
     ],
   });
+}
+
+// ── Drive photo persistence ───────────────────────────────────────────────────
+
+// Upload a photo to Drive if not already there; return permanent thumbnail URL.
+async function ensurePhotoInDrive(drive, folderId, key, sourceUrl) {
+  const fileName = `headshot-${key}.jpg`;
+  const safeName = fileName.replace(/'/g, "\\'");
+  const listRes  = await drive.files.list({
+    q: `'${folderId}' in parents and name='${safeName}' and trashed=false`,
+    fields: 'files(id)', pageSize: 1,
+  });
+  if (listRes.data.files.length > 0) {
+    return `https://drive.google.com/thumbnail?id=${listRes.data.files[0].id}&sz=w400`;
+  }
+  const res = await fetch(sourceUrl);
+  if (!res.ok) throw new Error(`Photo download failed: HTTP ${res.status}`);
+  const buffer   = Buffer.from(await res.arrayBuffer());
+  const mimeType = res.headers.get('content-type') || 'image/jpeg';
+  const created  = await drive.files.create({
+    requestBody: { name: fileName, parents: [folderId] },
+    media: { mimeType, body: Readable.from(buffer) },
+    fields: 'id',
+  });
+  const fileId = created.data.id;
+  await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' } });
+  console.log(`  Uploaded ${key} to Drive.`);
+  return `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
 }
 
 // ── Google Sheets write ───────────────────────────────────────────────────────
@@ -392,8 +421,11 @@ async function main() {
   const sheets = google.sheets({ version: 'v4', auth });
 
   let drivePhotos = {};
+  let driveFolderId = null;
   try {
-    drivePhotos = await fetchDrivePhotos(auth, spreadsheetId);
+    const result  = await fetchDrivePhotos(auth, spreadsheetId);
+    drivePhotos   = result.photos;
+    driveFolderId = result.folderId;
     console.log(`Drive photo lookup: ${Object.keys(drivePhotos).length} image(s) indexed.`);
   } catch (err) {
     console.warn('Drive photo lookup failed (photos will fall back to saved values):', err.message);
@@ -404,6 +436,19 @@ async function main() {
     airtablePhotos = await fetchAirtableResidentPhotos();
   } catch (err) {
     console.warn('Airtable resident photo lookup failed:', err.message);
+  }
+
+  // Persist Airtable photos to Drive for permanent URLs.
+  if (driveFolderId && Object.keys(airtablePhotos).length) {
+    const drive = google.drive({ version: 'v3', auth });
+    console.log(`Persisting ${Object.keys(airtablePhotos).length} resident photo(s) to Drive…`);
+    for (const [key, url] of Object.entries(airtablePhotos)) {
+      try {
+        airtablePhotos[key] = await ensurePhotoInDrive(drive, driveFolderId, key, url);
+      } catch (err) {
+        console.warn(`  Drive upload failed for ${key}:`, err.message);
+      }
+    }
   }
 
   const n = await writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos);

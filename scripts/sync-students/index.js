@@ -7,7 +7,9 @@
  *    Sheet (visual calendar layout) and extracts shift assignments for the
  *    configured date window.
  * 2. Fetches student headshot URLs from Airtable via the REST API.
- * 3. Replaces all student rows in the canonical roster Google Sheet.
+ * 3. Uploads each headshot to Google Drive (permanent URL) so the roster
+ *    isn't broken by Airtable CDN expiry (~2 h).
+ * 4. Replaces all student rows in the canonical roster Google Sheet.
  *
  * Required env vars:
  *   CANONICAL_SHEET_ID          – roster sheet to write to
@@ -16,7 +18,8 @@
  *   AIRTABLE_API_KEY            – Airtable personal access token
  */
 
-const { google } = require('googleapis');
+const { google }   = require('googleapis');
+const { Readable } = require('stream');
 
 const AIRTABLE_BASE_ID = 'appXHrYewBeH8Rwmh';
 const AIRTABLE_API     = 'https://api.airtable.com/v0';
@@ -393,8 +396,68 @@ async function getAuth() {
   const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
   return new google.auth.GoogleAuth({
     credentials: key,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    scopes: [
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive',
+    ],
   });
+}
+
+// ── Drive photo persistence ───────────────────────────────────────────────────
+
+async function getDriveFolderId(drive, spreadsheetId) {
+  if (process.env.DRIVE_FOLDER_ID) return process.env.DRIVE_FOLDER_ID;
+  const meta = await drive.files.get({ fileId: spreadsheetId, fields: 'parents' });
+  const parents = meta.data.parents || [];
+  if (!parents.length) throw new Error('Canonical sheet has no parent Drive folder.');
+  return parents[0];
+}
+
+// Upload a photo to Drive if not already there; return permanent thumbnail URL.
+async function ensurePhotoInDrive(drive, folderId, key, sourceUrl) {
+  const fileName  = `headshot-${key}.jpg`;
+  const safeName  = fileName.replace(/'/g, "\\'");
+  const listRes   = await drive.files.list({
+    q: `'${folderId}' in parents and name='${safeName}' and trashed=false`,
+    fields: 'files(id)', pageSize: 1,
+  });
+  if (listRes.data.files.length > 0) {
+    return `https://drive.google.com/thumbnail?id=${listRes.data.files[0].id}&sz=w400`;
+  }
+  const res = await fetch(sourceUrl);
+  if (!res.ok) throw new Error(`Photo download failed: HTTP ${res.status}`);
+  const buffer   = Buffer.from(await res.arrayBuffer());
+  const mimeType = res.headers.get('content-type') || 'image/jpeg';
+  const created  = await drive.files.create({
+    requestBody: { name: fileName, parents: [folderId] },
+    media: { mimeType, body: Readable.from(buffer) },
+    fields: 'id',
+  });
+  const fileId = created.data.id;
+  await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' } });
+  console.log(`  Uploaded ${key} to Drive.`);
+  return `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
+}
+
+// Replace Airtable CDN URLs in the photos maps with permanent Drive URLs.
+async function persistPhotosToDrive(auth, photos) {
+  const { byFullName, byLastName } = photos;
+  if (!byFullName.size) return;
+  const drive    = google.drive({ version: 'v3', auth });
+  const folderId = await getDriveFolderId(drive, process.env.CANONICAL_SHEET_ID);
+  console.log(`Persisting ${byFullName.size} student photo(s) to Drive…`);
+  for (const [key, entry] of byFullName) {
+    try {
+      const driveUrl = await ensurePhotoInDrive(drive, folderId, key, entry.url);
+      entry.url = driveUrl;
+      for (const word of entry.name.toLowerCase().split(/\s+/)) {
+        const lb = byLastName.get(word);
+        if (lb && lb.name === entry.name) lb.url = driveUrl;
+      }
+    } catch (err) {
+      console.warn(`  Drive upload failed for ${entry.name}:`, err.message);
+    }
+  }
 }
 
 async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
@@ -553,6 +616,13 @@ async function main() {
   ]);
 
   console.log(`\nSchedule entries: ${entries.length}, photos: ${photos.byFullName.size}`);
+
+  // Persist Airtable photos to Drive before writing to the sheet.
+  // This replaces expiring CDN URLs with permanent Drive thumbnail URLs.
+  await persistPhotosToDrive(auth, photos).catch(err =>
+    console.warn('Photo persistence to Drive failed:', err.message)
+  );
+
   await Promise.all([
     writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos),
     writeStudentsTab(auth, process.env.CANONICAL_SHEET_ID, photos),
