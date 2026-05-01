@@ -2,14 +2,20 @@ name: Sync Student Schedule and Photos
 
 on:
   schedule:
-    # Runs every hour to keep Airtable photo CDN URLs fresh (~2 h expiry).
-    - cron: '0 * * * *'
+    # Daily sync at 6 AM Pacific (14:00 UTC).
+    - cron: '0 14 * * *'
+    # Weekly photo refresh every Sunday — FORCE_PHOTO_REFRESH is set
+    # based on which schedule triggered the run (see step env below).
+    - cron: '0 14 * * 0'
   workflow_dispatch:
+
+permissions:
+  contents: write  # Required to commit headshots to the repo via GitHub API.
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -36,6 +42,10 @@ jobs:
           # Optional: set to table name or ID to skip metadata API discovery.
           # Required if your token lacks the schema.bases:read scope.
           AIRTABLE_TABLE:               ${{ secrets.AIRTABLE_TABLE }}
-          # Drive folder for persistent headshot storage (avoids Airtable CDN expiry).
-          DRIVE_FOLDER_ID:              ${{ secrets.DRIVE_FOLDER_ID }}
+          # GitHub API credentials for committing headshots to GitHub Pages.
+          GITHUB_TOKEN:                 ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:            ${{ github.repository }}
+          GITHUB_REF_NAME:              ${{ github.ref_name }}
+          # Force re-download of all photos on the Sunday run.
+          FORCE_PHOTO_REFRESH:          ${{ github.event.schedule == '0 14 * * 0' && 'true' || '' }}
         run: node index.js

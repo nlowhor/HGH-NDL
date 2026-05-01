@@ -7,8 +7,9 @@
  *    Sheet (visual calendar layout) and extracts shift assignments for the
  *    configured date window.
  * 2. Fetches student headshot URLs from Airtable via the REST API.
- * 3. Uploads each headshot to Google Drive (permanent URL) so the roster
- *    isn't broken by Airtable CDN expiry (~2 h).
+ * 3. Persists each headshot to the GitHub repo (served via GitHub Pages) so
+ *    the roster isn't broken by Airtable CDN expiry (~2 h). Existing files
+ *    are reused; re-download only happens when FORCE_PHOTO_REFRESH=true.
  * 4. Replaces all student rows in the canonical roster Google Sheet.
  *
  * Required env vars:
@@ -19,6 +20,7 @@
  */
 
 const { google } = require('googleapis');
+const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
 
 const AIRTABLE_BASE_ID = 'appXHrYewBeH8Rwmh';
 const AIRTABLE_API     = 'https://api.airtable.com/v0';
@@ -60,6 +62,7 @@ const DAY_NAMES = ['MON', 'TUES', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 function parseDate(val, hintYear) {
   if (!val) return null;
   const s = String(val).trim();
+  // "May 5" or "May-5"
   const monthDay = s.match(/^([A-Za-z]+)[\s\-](\d{1,2})$/);
   if (monthDay) {
     const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
@@ -69,10 +72,17 @@ function parseDate(val, hintYear) {
     const year = hintYear || new Date().getFullYear();
     return `${year}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   }
+  // "5/5/26" or "5/5/2026"
   const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (mdy) {
     const year = mdy[3].length === 2 ? 2000 + parseInt(mdy[3], 10) : parseInt(mdy[3], 10);
     return `${year}-${String(parseInt(mdy[1], 10)).padStart(2, '0')}-${String(parseInt(mdy[2], 10)).padStart(2, '0')}`;
+  }
+  // "5/5" (MM/DD without year) — use hintYear
+  const md = s.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (md) {
+    const year = hintYear || new Date().getFullYear();
+    return `${year}-${String(parseInt(md[1], 10)).padStart(2, '0')}-${String(parseInt(md[2], 10)).padStart(2, '0')}`;
   }
   return null;
 }
@@ -536,6 +546,36 @@ async function writeStudentsTab(auth, spreadsheetId, photos) {
   console.log(`"${STUDENTS_TAB}" tab: wrote ${entries.length} student record(s).`);
 }
 
+// ── GitHub Pages photo persistence ───────────────────────────────────────────
+
+// Iterates byFullName, uploads any Airtable URLs to the GitHub repo for
+// permanent serving, and updates both maps to use the stable Pages URL.
+async function persistPhotosToPages(photos) {
+  if (!process.env.GITHUB_TOKEN) {
+    console.warn('GITHUB_TOKEN not set — skipping GitHub Pages photo persistence.');
+    return photos;
+  }
+
+  const { byFullName, byLastName } = photos;
+  let persisted = 0;
+  let skipped   = 0;
+
+  for (const [normalKey, entry] of byFullName) {
+    if (!isAirtableUrl(entry.url)) { skipped++; continue; }
+    const fileKey = normalKey.replace(/ /g, '-');
+    try {
+      const pageUrl = await ensurePhotoInPages(fileKey, entry.url, 'photos/students');
+      entry.url = pageUrl;
+      persisted++;
+    } catch (err) {
+      console.warn(`  Photo persistence failed for ${entry.name}:`, err.message);
+    }
+  }
+
+  console.log(`Photos persisted to GitHub Pages: ${persisted} (${skipped} already permanent).`);
+  return { byFullName, byLastName };
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -546,7 +586,7 @@ async function main() {
   const auth = await getAuth();
 
   const emptyPhotos = { byFullName: new Map(), byLastName: new Map() };
-  const [entries, photos] = await Promise.all([
+  const [entries, rawPhotos] = await Promise.all([
     fetchStudentSchedule(auth),
     fetchStudentPhotos().catch(err => {
       console.warn('Photo fetch failed (continuing without photos):', err.message);
@@ -554,7 +594,12 @@ async function main() {
     }),
   ]);
 
-  console.log(`\nSchedule entries: ${entries.length}, photos: ${photos.byFullName.size}`);
+  console.log(`\nSchedule entries: ${entries.length}, photos: ${rawPhotos.byFullName.size}`);
+  const photos = await persistPhotosToPages(rawPhotos).catch(err => {
+    console.warn('GitHub Pages photo persistence failed (falling back to Airtable URLs):', err.message);
+    return rawPhotos;
+  });
+
   await Promise.all([
     writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos),
     writeStudentsTab(auth, process.env.CANONICAL_SHEET_ID, photos),

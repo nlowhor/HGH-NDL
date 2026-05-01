@@ -1,5 +1,7 @@
 'use strict';
 
+const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
+
 /**
  * HGH Resident Schedule Sync
  * ---------------------------
@@ -371,6 +373,36 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
   return newRows.length;
 }
 
+// ── GitHub Pages photo persistence ───────────────────────────────────────────
+
+// Takes the airtablePhotos map (normalizedName → url) and returns a new map
+// where Airtable URLs have been replaced with permanent GitHub Pages URLs.
+async function persistResidentPhotos(airtablePhotos) {
+  if (!process.env.GITHUB_TOKEN) {
+    console.warn('GITHUB_TOKEN not set — skipping GitHub Pages photo persistence.');
+    return airtablePhotos;
+  }
+
+  const persisted = {};
+  let hits    = 0;
+  let skipped = 0;
+
+  for (const [key, url] of Object.entries(airtablePhotos)) {
+    if (!isAirtableUrl(url)) { persisted[key] = url; skipped++; continue; }
+    const fileKey = key.replace(/ /g, '-');
+    try {
+      persisted[key] = await ensurePhotoInPages(fileKey, url, 'photos/residents');
+      hits++;
+    } catch (err) {
+      console.warn(`  Photo persistence failed for key "${key}":`, err.message);
+      persisted[key] = url; // fall back to expiring URL
+    }
+  }
+
+  console.log(`Resident photos persisted to GitHub Pages: ${hits} (${skipped} already permanent).`);
+  return persisted;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -402,7 +434,11 @@ async function main() {
 
   let airtablePhotos = {};
   try {
-    airtablePhotos = await fetchAirtableResidentPhotos();
+    const raw = await fetchAirtableResidentPhotos();
+    airtablePhotos = await persistResidentPhotos(raw).catch(err => {
+      console.warn('GitHub Pages photo persistence failed (falling back to Airtable URLs):', err.message);
+      return raw;
+    });
   } catch (err) {
     console.warn('Airtable resident photo lookup failed:', err.message);
   }

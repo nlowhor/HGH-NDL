@@ -46,7 +46,8 @@ function normalizeStudentName(s) {
 
 export async function fetchStudentDirectory(url) {
   if (!url) return new Map();
-  const res = await fetch(url, { cache: "no-store" });
+  const bustUrl = url + (url.includes("?") ? "&" : "?") + "_t=" + Date.now();
+  const res = await fetch(bustUrl, { cache: "no-store" });
   if (!res.ok) throw new Error(`Student directory fetch failed: HTTP ${res.status}`);
   const rows = parseCsv(await res.text());
   const map = new Map();
