@@ -431,28 +431,37 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   const photoCol = headers.indexOf('photo_url');
   const notesCol = headers.indexOf('notes');
 
-  // Read entire sheet, strip student rows, append new ones, then rewrite.
-  // This avoids fragile row-index deletion (deleteDimension fails when row
-  // counts change between the read and the write).
-  const allRes   = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
-  const rows     = allRes.data.values || [];
-  const kept     = rows.slice(0, 1); // header row always kept
-  let  removed   = 0;
-  for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) { removed++; continue; }
-    kept.push(rows[i]);
-  }
-  console.log(`Removed ${removed} existing student row(s).`);
+  // Read all rows and find student row indices to delete.
+  // Using deleteDimension (same as residents sync) instead of values.clear+update
+  // to avoid clobbering concurrent writes from other service accounts (e.g. Medrez).
+  const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
+  const rows   = allRes.data.values || [];
 
-  if (!entries.length) {
-    await sheets.spreadsheets.values.clear({ spreadsheetId, range: ROSTER_TAB });
-    await sheets.spreadsheets.values.update({
-      spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
-      requestBody: { values: kept },
-    });
-    console.log('No student entries to write.');
-    return 0;
+  const toDelete = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) {
+      toDelete.push(i + 1); // 1-based sheet row number
+    }
   }
+  console.log(`Deleting ${toDelete.length} existing student row(s)…`);
+
+  if (toDelete.length) {
+    const meta    = await sheets.spreadsheets.get({ spreadsheetId });
+    const sheetId = meta.data.sheets
+      .find(s => s.properties.title === ROSTER_TAB).properties.sheetId;
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: toDelete.reverse().map(rowNum => ({
+          deleteDimension: {
+            range: { sheetId, dimension: 'ROWS', startIndex: rowNum - 1, endIndex: rowNum },
+          },
+        })),
+      },
+    });
+  }
+
+  if (!entries.length) { console.log('No student entries to append.'); return 0; }
 
   let photoHits = 0;
   const width   = headers.length;
@@ -477,15 +486,14 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     return row;
   });
 
-  const allNewRows = [...kept, ...newRows];
-  // Clear first so no stale rows survive below the new content.
-  await sheets.spreadsheets.values.clear({ spreadsheetId, range: ROSTER_TAB });
-  await sheets.spreadsheets.values.update({
-    spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
-    requestBody: { values: allNewRows },
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: ROSTER_TAB,
+    valueInputOption: 'RAW',
+    requestBody: { values: newRows },
   });
 
-  console.log(`Wrote ${newRows.length} student row(s) (${photoHits} with photo_url).`);
+  console.log(`Appended ${newRows.length} student row(s) (${photoHits} with photo_url).`);
   return newRows.length;
 }
 
