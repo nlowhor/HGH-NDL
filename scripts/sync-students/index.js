@@ -433,7 +433,7 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   console.log(`Removed ${removed} existing student row(s).`);
 
   if (!entries.length) {
-    // Rewrite without student rows and return.
+    await sheets.spreadsheets.values.clear({ spreadsheetId, range: ROSTER_TAB });
     await sheets.spreadsheets.values.update({
       spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
       requestBody: { values: kept },
@@ -466,6 +466,8 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   });
 
   const allNewRows = [...kept, ...newRows];
+  // Clear first so no stale rows survive below the new content.
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range: ROSTER_TAB });
   await sheets.spreadsheets.values.update({
     spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
     requestBody: { values: allNewRows },
