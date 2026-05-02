@@ -27,11 +27,15 @@
   </header>
 
   <main>
-    <section id="current-section" class="shift-section">
-      <header class="shift-section__head">
-        <h2>Current shift</h2>
+    <nav class="tabs-bar" role="tablist" aria-label="Shift view">
+      <button class="tab-btn tab-btn--active" data-tab="current" role="tab" aria-selected="true" aria-controls="current-section">Current</button>
+      <button class="tab-btn" data-tab="upcoming" role="tab" aria-selected="false" aria-controls="next-section">Upcoming</button>
+    </nav>
+
+    <section id="current-section" class="shift-section tab-panel tab-panel--active" role="tabpanel">
+      <div class="shift-section__head">
         <div id="current-meta" class="shift-section__meta"></div>
-      </header>
+      </div>
       <div class="roles">
         <div class="role-col" data-role="attending">
           <h3>Attendings</h3>
@@ -48,11 +52,10 @@
       </div>
     </section>
 
-    <section id="next-section" class="shift-section next">
-      <header class="shift-section__head">
-        <h2>Next shift</h2>
+    <section id="next-section" class="shift-section tab-panel" role="tabpanel">
+      <div class="shift-section__head">
         <div id="next-meta" class="shift-section__meta"></div>
-      </header>
+      </div>
       <div class="roles">
         <div class="role-col" data-role="attending">
           <h3>Attendings</h3>

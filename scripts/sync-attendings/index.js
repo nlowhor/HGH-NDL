@@ -138,7 +138,16 @@ function parseQGendaApiJson(json, fromDate, toDate) {
   }
 
   function extractLabel(obj) {
-    return get(obj, 'taskName', 'TaskName', 'shiftName', 'ShiftName', 'label', 'Label') || null;
+    const task = get(obj, 'taskName', 'TaskName', 'shiftName', 'ShiftName', 'label', 'Label',
+                     'taskAbbrev', 'TaskAbbrev', 'taskDisplayName', 'TaskDisplayName') || null;
+    // QGenda may put the facility/location in a separate field — combine so OFFSITE_RE can filter it.
+    const facility = get(obj,
+      'facilityName', 'FacilityName', 'facilityAbbreviation', 'FacilityAbbreviation',
+      'site', 'Site', 'location', 'Location', 'hospital', 'Hospital',
+      'tagName', 'TagName', 'facilityTag', 'FacilityTag'
+    );
+    if (task && facility) return `${task} (${facility})`;
+    return task || facility || null;
   }
 
   function extractTime(obj) {
@@ -600,20 +609,32 @@ async function scrapeFacultyPhotos(browser) {
     }
 
     // Given an img element, walk up the DOM looking for a sibling or ancestor
-    // text node that is a person name (has credential AND every word capitalized).
+    // text node that is a person name. Many WordPress themes put the name in an
+    // <h4> and the credential in a separate <p> — so we accept a heading-only
+    // name when the container has a credential anywhere in it.
     function nearbyName(imgEl) {
       let el = imgEl.parentElement;
       for (let depth = 0; depth < 7 && el; depth++) {
         // Skip containers that hold many images (too broad — would match wrong card).
         if (el.querySelectorAll('img').length > 4) { el = el.parentElement; continue; }
 
-        // Prefer heading elements, then strong/b, then any p.
-        for (const tag of ['h1','h2','h3','h4','h5','h6','strong','b','p']) {
+        const containerHasCredential = CREDENTIAL_RE.test(textOf(el));
+
+        // Headings + bold: accept person name even without credential in same element,
+        // as long as the enclosing card container has a credential somewhere.
+        for (const tag of ['h1','h2','h3','h4','h5','h6','strong','b']) {
           for (const node of el.querySelectorAll(tag)) {
             const t = textOf(node).split('\n')[0].trim();
             if (t.length < 4 || t.length > 80) continue;
-            if (CREDENTIAL_RE.test(t) && isPersonName(t)) return t;
+            if (isPersonName(t) && (CREDENTIAL_RE.test(t) || containerHasCredential)) return t;
           }
+        }
+
+        // Paragraphs: require credential in same element to avoid false positives.
+        for (const node of el.querySelectorAll('p')) {
+          const t = textOf(node).split('\n')[0].trim();
+          if (t.length < 4 || t.length > 80) continue;
+          if (CREDENTIAL_RE.test(t) && isPersonName(t)) return t;
         }
 
         // Check adjacent siblings.
@@ -628,23 +649,25 @@ async function scrapeFacultyPhotos(browser) {
       return '';
     }
 
-    // Also scan for the pattern: heading with credential, then the NEXT sibling
-    // or nearby element has an image.
+    // Fallback: scan all headings for person names; credential may be in a sibling element.
     function findByHeadings() {
       const found = {};
       for (const tag of ['h1','h2','h3','h4','h5','h6']) {
         for (const heading of document.querySelectorAll(tag)) {
           const t = textOf(heading).split('\n')[0].trim();
-          if (!CREDENTIAL_RE.test(t) || !isPersonName(t) || t.length > 80) continue;
-
-          // Look in parent and siblings for an image.
+          if (!isPersonName(t) || t.length > 80) continue;
+          // Require a credential somewhere in the card container (parent or grandparent).
           const container = heading.parentElement;
           if (!container) continue;
+          const gp = container.parentElement;
+          const hasCredential = CREDENTIAL_RE.test(textOf(container)) ||
+                                (gp && CREDENTIAL_RE.test(textOf(gp)));
+          if (!hasCredential) continue;
+
+          // Look in parent and grandparent for an image.
           const src = bestSrc(container);
           if (src) { found[t] = src; continue; }
 
-          // Try grandparent.
-          const gp = container.parentElement;
           if (gp && gp.querySelectorAll('img').length <= 4) {
             const gpSrc = bestSrc(gp);
             if (gpSrc) found[t] = gpSrc;

@@ -107,6 +107,20 @@ function renderColumn(targetKey, rows, seniorResidents = []) {
   for (const r of rows) host.appendChild(personCard(r, seniorResidents));
 }
 
+// ---------- Tabs ----------
+
+function switchTab(tabName) {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    const active = btn.dataset.tab === tabName;
+    btn.classList.toggle('tab-btn--active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('.tab-panel').forEach(panel => {
+    const active = panel.id === tabName + '-section';
+    panel.classList.toggle('tab-panel--active', active);
+  });
+}
+
 // ---------- Rendering ----------
 
 function currentWhen() {
@@ -200,6 +214,10 @@ function wire() {
   });
 
   refreshBtn.addEventListener("click", () => { reload(); });
+
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
 
   demoToggle.checked = state.demoMode;
   demoToggle.addEventListener("change", () => {
