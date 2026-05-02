@@ -2,10 +2,9 @@
 // do NOT overwrite earlier ones; duplicates (same date+shift+role+name)
 // are deduplicated so a staffer appearing in multiple feeds shows once.
 
-// Attending shifts at these off-site locations are never shown.
+// Rows mentioning these off-site locations are never shown (any role).
 const OFFSITE_KEYWORDS = ["san leandro", "slh", "alameda", "cho"];
-function isOffsiteAttending(r) {
-  if (r.role !== "attending") return false;
+function isOffsite(r) {
   const text = [r.name, r.title, r.notes, r.shift, r.date]
     .join(" ").toLowerCase();
   return OFFSITE_KEYWORDS.some((kw) => text.includes(kw));
@@ -85,7 +84,7 @@ export async function loadAllRosters({ demoMode = false } = {}) {
   }
 
   const rows = dedupe(buckets.flat())
-    .filter((r) => !isOffsiteAttending(r))
+    .filter((r) => !isOffsite(r))
     .filter((r) => !isBackupRow(r));
 
   // Enrich student rows with photos from the student directory tab.
