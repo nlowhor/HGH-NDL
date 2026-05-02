@@ -590,7 +590,8 @@ async function scrapeFacultyPhotos(browser) {
     // Person names: every word starts with uppercase ("Kevin Gardner, MD").
     // Job titles: contain lowercase connectives ("Director of Critical Care").
 
-    const CREDENTIAL_RE = /\b(md|do|phd|mph|msed?|macm|msc)\b/i;
+    // Include all common EM credentials — missing FACEP/FAAEM was causing many names to be skipped.
+    const CREDENTIAL_RE = /\b(MD|DO|PhD|MPH|MSEd?|MACM|MSc|FACEP|FAAEM|FACP|PA-?C|NP|RN|PA|MS)\b/i;
 
     // A person name has 2–5 words where EVERY word starts with an uppercase letter.
     // Strip trailing credentials first, then check each remaining word.
@@ -694,6 +695,17 @@ async function scrapeFacultyPhotos(browser) {
       if (!result[n]) result[n] = u;
     }
 
+    // Strategy C: plain-text scan for any "First Last, Credential" pattern.
+    // Builds name entries even when DOM photo-association fails.
+    // Names found here get an empty URL so they contribute to displayByLast but not byLast.
+    const pageText = document.body.innerText || '';
+    const textRe = /([A-Z][a-z]+(?:(?:\s+|-)[A-Z][a-z'-]+)+)[,\s]+(?:MD|DO|PhD|FACEP|FAAEM|FACP|PA-?C|NP|RN|PA|MPH)/g;
+    let tm;
+    while ((tm = textRe.exec(pageText)) !== null) {
+      const n = tm[1].trim();
+      if (!result[n]) result[n] = ''; // empty URL — name only, used for display-name resolution
+    }
+
     return result;
   }, FACULTY_URL);
 
@@ -704,20 +716,20 @@ async function scrapeFacultyPhotos(browser) {
   const byLast       = {};
   const displayByLast = {}; // last name → "Caitlin Bailey" (no credential suffix)
   for (const [name, url] of Object.entries(photos)) {
-    if (!url) continue;
     const full = normalizeName(name);
     const last = lastName(name);
+    const display = name.replace(CREDENTIAL_RE, '').replace(/[\s,;]+$/, '').replace(/\s+/g, ' ').trim();
+    // displayByLast: built from all names including text-only (empty URL) — for display name resolution.
+    if (last && !displayByLast[last]) displayByLast[last] = display;
+    // byFull / byLast: only entries with a real photo URL.
+    if (!url) continue;
     byFull[full] = url;
-    if (last && !byLast[last]) {
-      byLast[last] = url;
-      // Strip credential suffix for display ("Caitlin Bailey, MD" → "Caitlin Bailey").
-      displayByLast[last] = name.replace(CREDENTIAL_RE, '').replace(/[\s,;]+$/, '').replace(/\s+/g, ' ').trim();
-    }
+    if (last && !byLast[last]) byLast[last] = url;
   }
 
-  console.log(`Faculty photos scraped: ${Object.keys(byFull).length} names, ${Object.keys(byLast).length} by last name`);
-  if (Object.keys(byLast).length) {
-    console.log('  Last names:', Object.keys(byLast).slice(0, 8).join(', '));
+  console.log(`Faculty: ${Object.keys(displayByLast).length} display names, ${Object.keys(byLast).length} with photos`);
+  if (Object.keys(displayByLast).length) {
+    console.log('  Display names sample:', Object.values(displayByLast).slice(0, 6).join(', '));
   }
   return { byFull, byLast, displayByLast };
 }

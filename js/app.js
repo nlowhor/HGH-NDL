@@ -127,7 +127,11 @@ function switchTab(tabName) {
 const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO)\b/i;
 
 function filterOffsite(rows) {
-  return rows.filter(r => r.role !== 'attending' || !OFFSITE_RE.test(r.notes || ''));
+  return rows.filter(r => {
+    if (r.role !== 'attending') return true;
+    const text = [r.name, r.title, r.notes, r.shift].join(' ');
+    return !OFFSITE_RE.test(text);
+  });
 }
 
 function currentWhen() {
