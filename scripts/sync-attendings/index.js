@@ -688,9 +688,10 @@ async function scrapeFacultyPhotos(browser) {
       if (name) result[name] = abs;
     }
 
-    // Strategy B: scan headings with credentials, find nearby image.
-    if (Object.keys(result).length === 0) {
-      Object.assign(result, findByHeadings());
+    // Strategy B: heading-first scan — always run so cards missed by Strategy A are filled in.
+    const headingResults = findByHeadings();
+    for (const [n, u] of Object.entries(headingResults)) {
+      if (!result[n]) result[n] = u;
     }
 
     return result;
@@ -840,10 +841,16 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
   };
 
   // Expand abbreviated QGenda name to full display name using faculty page data.
-  // "C. Bailey" → "Caitlin Bailey" if we have a last-name match; otherwise keep as-is.
+  // "C. Bailey" → "Caitlin Bailey" by last-name lookup; verifies first initial matches
+  // to avoid mis-mapping when two people share a last name.
   const resolveDisplayName = (name) => {
     const last = lastName(name);
-    return (displayByLast && displayByLast[last]) || name;
+    const full = displayByLast && displayByLast[last];
+    if (!full) return name;
+    // If QGenda gave an initial ("C."), confirm it matches the faculty name's first letter.
+    const initialMatch = name.match(/^([A-Z])\./);
+    if (initialMatch && !full.startsWith(initialMatch[1])) return name;
+    return full;
   };
 
   let photoHits = 0;

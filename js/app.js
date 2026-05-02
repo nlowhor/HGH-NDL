@@ -110,18 +110,25 @@ function renderColumn(targetKey, rows, seniorResidents = []) {
 // ---------- Tabs ----------
 
 function switchTab(tabName) {
+  let panelId = null;
   document.querySelectorAll('.tab-btn').forEach(btn => {
     const active = btn.dataset.tab === tabName;
     btn.classList.toggle('tab-btn--active', active);
     btn.setAttribute('aria-selected', String(active));
+    if (active) panelId = btn.getAttribute('aria-controls');
   });
   document.querySelectorAll('.tab-panel').forEach(panel => {
-    const active = panel.id === tabName + '-section';
-    panel.classList.toggle('tab-panel--active', active);
+    panel.classList.toggle('tab-panel--active', panel.id === panelId);
   });
 }
 
-// ---------- Rendering ----------
+// ---------- Off-site filter ----------
+
+const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO)\b/i;
+
+function filterOffsite(rows) {
+  return rows.filter(r => r.role !== 'attending' || !OFFSITE_RE.test(r.notes || ''));
+}
 
 function currentWhen() {
   return state.selectedWhen ? new Date(state.selectedWhen) : new Date();
@@ -147,8 +154,8 @@ function render() {
   document.getElementById("current-meta").textContent = describeShift(current);
   document.getElementById("next-meta").textContent = describeShift(next);
 
-  const curGroups = groupByRole(rosterForShift(state.rows, current));
-  const nextGroups = groupByRole(rosterForShift(state.rows, next));
+  const curGroups = groupByRole(filterOffsite(rosterForShift(state.rows, current)));
+  const nextGroups = groupByRole(filterOffsite(rosterForShift(state.rows, next)));
 
   const curSeniors = (curGroups["resident"] || []).filter(isSeniorResident);
   const nextSeniors = (nextGroups["resident"] || []).filter(isSeniorResident);
