@@ -124,13 +124,13 @@ function switchTab(tabName) {
 
 // ---------- Off-site filter ----------
 
-const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO)/i;
+const OFFSITE_KEYWORDS = ['san leandro', 'slh', 'alameda', 'cho'];
 
 function filterOffsite(rows) {
   return rows.filter(r => {
     if (r.role !== 'attending') return true;
-    const text = [r.name, r.title, r.notes, r.shift].join(' ');
-    return !OFFSITE_RE.test(text);
+    const text = Object.values(r).filter(v => typeof v === 'string').join(' ').toLowerCase();
+    return !OFFSITE_KEYWORDS.some(kw => text.includes(kw));
   });
 }
 
