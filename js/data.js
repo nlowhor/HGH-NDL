@@ -11,6 +11,10 @@ function isOffsiteAttending(r) {
   return OFFSITE_KEYWORDS.some((kw) => text.includes(kw));
 }
 
+function isBackupRow(r) {
+  return /backup/i.test(r.notes || "");
+}
+
 import { config } from "./config.js";
 import { fetchSheetRoster, fetchStudentDirectory } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
@@ -80,7 +84,9 @@ export async function loadAllRosters({ demoMode = false } = {}) {
     await tryOne("Sample data (no live sources configured)", () => fetchSheetRoster(src.sampleCsvUrl));
   }
 
-  const rows = dedupe(buckets.flat()).filter((r) => !isOffsiteAttending(r));
+  const rows = dedupe(buckets.flat())
+    .filter((r) => !isOffsiteAttending(r))
+    .filter((r) => !isBackupRow(r));
 
   // Enrich student rows with photos from the student directory tab.
   if (src.studentsCsvUrl) {

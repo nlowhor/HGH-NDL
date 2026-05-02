@@ -57,11 +57,17 @@ function isBackup(row) {
 }
 
 function isSeniorResident(row) {
+  // Only pair students with residents on a standard shift. The notes field
+  // holds the raw Medrez shift name; whitelist plain names and reject anything
+  // with qualifiers like "E-Swing", "D-Swing", "Fast Track", etc.
+  const standardShift = /^(day|swing|night|evening|noc(ht?)?|am|pm)?$/i
+    .test((row.notes || "").trim());
   return (
     row.role === "resident" &&
     /\b(r[34]|pgy-?[34])\b/i.test(row.title || "") &&
     !isBackup(row) &&
-    !/\bcho\b/i.test(row.notes || "")
+    !/\bcho\b/i.test(row.notes || "") &&
+    standardShift
   );
 }
 
