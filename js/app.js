@@ -124,7 +124,7 @@ function switchTab(tabName) {
 
 // ---------- Off-site filter ----------
 
-const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO)\b/i;
+const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO)/i;
 
 function filterOffsite(rows) {
   return rows.filter(r => {
