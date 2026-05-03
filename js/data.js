@@ -119,24 +119,38 @@ export function rosterForShift(rows, instance) {
 // Non-primary / specialty shift patterns — sorted after main shift doctors.
 const SUB_SHIFT_RE = /fast.?track|[a-z][- ]?swing|pit\b/i;
 
-function shiftSortKey(r) {
-  const text = `${r.shift || ""} ${r.notes || ""} ${r.title || ""}`;
-  const nonPrimary = SUB_SHIFT_RE.test(text);
-  // Extract a trailing number or single letter for Day 1/2 or Swing A/B ordering.
-  const m = text.match(/\b(\d+|[A-Z])\b(?=[^A-Z\d]*$)/i);
-  const suffix = m ? m[1].toUpperCase() : "";
-  return [nonPrimary ? 1 : 0, suffix, r.name];
+function normalizedShiftName(notes) {
+  if (!notes) return "";
+  // Strip time ranges so "Day A7a - 4p" → "Day A"
+  return notes
+    .replace(/\s*\d{1,2}(?::\d{2})?\s*[ap]m?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*[ap]m?/gi, "")
+    .replace(/\s+/g, " ").trim();
 }
 
-function cmpKeys([a0, a1, a2], [b0, b1, b2]) {
-  if (a0 !== b0) return a0 - b0;
-  if (a1 !== b1) {
-    // Numbers before letters; sort numerically if both numeric.
-    const an = parseInt(a1, 10), bn = parseInt(b1, 10);
-    if (!isNaN(an) && !isNaN(bn)) return an - bn;
-    return a1.localeCompare(b1);
+function residentYear(r) {
+  // Returns 4/3/2/1 for R4–R1; 0 for unrecognised (sorts last).
+  const m = (r.title || "").match(/\b(?:R|PGY-?)([1-4])\b/i);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+function attendingSortKey(r) {
+  const name = normalizedShiftName(r.notes);
+  return [SUB_SHIFT_RE.test(name) ? 1 : 0, name.toLowerCase()];
+}
+
+function residentSortKey(r) {
+  const name = normalizedShiftName(r.notes);
+  // Year descending (4→1), then shift name ascending.
+  return [SUB_SHIFT_RE.test(name) ? 1 : 0, 5 - residentYear(r), name.toLowerCase()];
+}
+
+function cmpArrays(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const ai = a[i] ?? "", bi = b[i] ?? "";
+    if (ai < bi) return -1;
+    if (ai > bi) return 1;
   }
-  return a2.localeCompare(b2);
+  return 0;
 }
 
 // Group rows by role, preserving roles order from config.
@@ -146,9 +160,9 @@ export function groupByRole(rows) {
   for (const r of rows) {
     if (byRole[r.role]) byRole[r.role].push(r);
   }
-  for (const k of Object.keys(byRole)) {
-    byRole[k].sort((a, b) => cmpKeys(shiftSortKey(a), shiftSortKey(b)));
-  }
+  byRole["attending"]?.sort((a, b) => cmpArrays(attendingSortKey(a), attendingSortKey(b)));
+  byRole["resident"]?.sort((a, b) => cmpArrays(residentSortKey(a), residentSortKey(b)));
+  byRole["student"]?.sort((a, b) => (normalizedShiftName(a.notes) < normalizedShiftName(b.notes) ? -1 : 1));
   return byRole;
 }
 
