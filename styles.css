@@ -243,8 +243,8 @@ main {
 }
 
 .card__photo {
-  width: 72px;
-  height: 72px;
+  width: 144px;
+  height: 144px;
   border-radius: 50%;
   background: var(--panel-2) center/cover no-repeat;
   border: 3px solid var(--border);
@@ -254,7 +254,7 @@ main {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 28px;
+  font-size: 56px;
   font-weight: 700;
 }
 .card__photo img {
@@ -296,7 +296,7 @@ main {
 
   .card { padding: 16px 18px; gap: 18px; }
 
-  .card__photo { width: 90px; height: 90px; font-size: 36px; }
+  .card__photo { width: 180px; height: 180px; font-size: 72px; }
 
   .card__firstname { font-size: 24px; }
   .card__lastname  { font-size: 18px; }
@@ -308,7 +308,7 @@ main {
 
   .card { padding: 20px 22px; gap: 22px; border-radius: 14px; }
 
-  .card__photo { width: 120px; height: 120px; font-size: 48px; }
+  .card__photo { width: 240px; height: 240px; font-size: 96px; }
 
   .card__firstname { font-size: 30px; }
   .card__lastname  { font-size: 22px; }
@@ -328,7 +328,7 @@ main {
     gap: 16px;
   }
 
-  .card__photo { width: 60px; height: 60px; font-size: 22px; }
+  .card__photo { width: 120px; height: 120px; font-size: 44px; }
 
   .card__firstname { font-size: 18px; }
   .card__lastname  { font-size: 14px; }
