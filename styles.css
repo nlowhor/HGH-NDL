@@ -291,6 +291,12 @@ main {
   color: var(--accent);
   margin-top: 2px;
 }
+.card__shift {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+  margin-top: 1px;
+}
 .card__pair {
   color: var(--accent-2);
   font-size: 14px;
@@ -311,6 +317,7 @@ main {
   .card__firstname { font-size: 22px; }
   .card__lastname  { font-size: 18px; }
   .card__level     { font-size: 15px; }
+  .card__shift     { font-size: 15px; }
   .card__pair      { font-size: 14px; }
 }
 
@@ -324,6 +331,7 @@ main {
   .card__firstname { font-size: 28px; }
   .card__lastname  { font-size: 22px; }
   .card__level     { font-size: 18px; }
+  .card__shift     { font-size: 18px; }
   .card__pair      { font-size: 16px; }
 
   .role-col h3         { font-size: 22px; }

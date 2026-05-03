@@ -71,6 +71,15 @@ function isSeniorResident(row) {
   );
 }
 
+function shiftLabel(notes) {
+  if (!notes) return null;
+  // Strip time ranges like "7a - 4p", "7a-4p", "7:00-15:00"
+  const stripped = notes
+    .replace(/\s*\d{1,2}(?::\d{2})?\s*[ap]m?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*[ap]m?/gi, '')
+    .replace(/\s+/g, ' ').trim();
+  return stripped || null;
+}
+
 function personCard(row, seniorResidents = []) {
   const photo = el("div", { class: "card__photo" });
   if (row.photo_url) {
@@ -96,10 +105,12 @@ function personCard(row, seniorResidents = []) {
     const names = seniorResidents.map((r) => r.name.split(/\s+/)[0]).join(" or ");
     pairLine = el("div", { class: "card__pair" }, `Paired with ${names}`);
   }
+  const label = shiftLabel(row.notes);
   const info = el("div", { class: "card__info" }, [
     el("div", { class: "card__firstname" }, firstName),
     lastName ? el("div", { class: "card__lastname" }, lastName) : null,
     levelLine,
+    label ? el("div", { class: "card__shift" }, label) : null,
     pairLine,
   ]);
   return el("div", { class: "card" }, [photo, info]);
