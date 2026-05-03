@@ -292,9 +292,8 @@ main {
   margin-top: 2px;
 }
 .card__shift {
-  color: var(--muted);
+  color: var(--accent-2);
   font-size: 13px;
-  font-style: italic;
   margin-top: 1px;
 }
 .card__pair {
