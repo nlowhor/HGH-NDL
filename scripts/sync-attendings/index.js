@@ -22,6 +22,7 @@ const fs         = require('fs');
 const QGENDA_URL     = 'https://app.qgenda.com/Link/view?linkKey=f175f5fe-1111-4da4-8e80-09b3d6b90a98';
 const FACULTY_URL    = 'https://www.highlandemergency.org/faculty/';
 const ROSTER_TAB     = 'roster';
+const SYNC_LOG_TAB   = 'sync_log';
 const ATTENDING_ROLE = 'attending';
 const DAYS_BEHIND    = 1;
 const DAYS_AHEAD     = 60;
@@ -893,6 +894,31 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
   return newRows.length;
 }
 
+// ── Sync log ──────────────────────────────────────────────────────────────────
+
+async function writeSyncTimestamp(sheets, spreadsheetId, role) {
+  const now = new Date().toISOString();
+  let rows = [];
+  try {
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: SYNC_LOG_TAB });
+    rows = res.data.values || [];
+  } catch {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title: SYNC_LOG_TAB } } }] },
+    });
+  }
+  if (!rows.length) rows = [['role', 'updated_at']];
+  const idx = rows.findIndex((r, i) => i > 0 && r[0] === role);
+  if (idx >= 0) rows[idx][1] = now;
+  else rows.push([role, now]);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${SYNC_LOG_TAB}!A1`,
+    valueInputOption: 'RAW', requestBody: { values: rows },
+  });
+  console.log(`Sync log: ${role} updated_at ${now}`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -933,6 +959,7 @@ async function main() {
     byFull: photos.byFull, byLast: photos.byLast,
     displayByLast: photos.displayByLast || {}, savedPhotos: {},
   });
+  await writeSyncTimestamp(sheets, spreadsheetId, ATTENDING_ROLE);
   console.log(`\nDone. ${n} attending shift rows written to sheet.`);
 }
 

@@ -18,6 +18,7 @@ import { config } from "./config.js";
 import { fetchSheetRoster, fetchStudentDirectory } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
 import { fetchWebsiteRoster } from "./sources/web.js";
+import { parseCsv } from "./parsers/csv.js";
 
 function dedupe(rows) {
   const seen = new Map();
@@ -149,4 +150,23 @@ export function groupByRole(rows) {
     byRole[k].sort((a, b) => cmpKeys(shiftSortKey(a), shiftSortKey(b)));
   }
   return byRole;
+}
+
+// Fetch per-role sync timestamps from the sync_log tab.
+// Returns { attending: Date|null, resident: Date|null, student: Date|null }
+export async function loadSyncLog() {
+  const result = { attending: null, resident: null, student: null };
+  const url = config.sources.syncLogCsvUrl;
+  if (!url) return result;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return result;
+    const rows = parseCsv(await res.text());
+    for (const row of rows) {
+      const role = (row.role || "").trim();
+      const ts   = (row.updated_at || "").trim();
+      if (result.hasOwnProperty(role) && ts) result[role] = new Date(ts);
+    }
+  } catch { /* sync log is optional — silently ignore */ }
+  return result;
 }

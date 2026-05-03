@@ -58,6 +58,14 @@ export const config = {
     // select the "students" sheet -> CSV. Leave null to disable.
     studentsCsvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQNmwF87H6dQZvru4z3JfUFFASk9a8xheUgwPxY5w_TGGiD-oVr2xWpnipqnRqSQ8zr8XBi0RTyR8UJ/pub?gid=4450098&single=true&output=csv",
 
+    // Published CSV of the "sync_log" tab — written by each sync script
+    // to record when it last ran. Steps to enable:
+    //   1. Run any sync script once so it creates the "sync_log" tab.
+    //   2. In the spreadsheet: File → Share → Publish to web → sync_log → CSV.
+    //      OR open the tab, look at the URL for gid=NNNN, substitute below.
+    // Replace the gid value once you know the tab's numeric GID.
+    syncLogCsvUrl: null,
+
     // Local fallback used when no remote sources return data.
     // Keep this as a relative path so the static site works offline.
     sampleCsvUrl: "sample-data/roster.csv",

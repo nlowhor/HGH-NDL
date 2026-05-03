@@ -2,7 +2,7 @@
 // for the selected time, update clock, and handle user interactions.
 
 import { config } from "./config.js";
-import { loadAllRosters, rosterForShift, groupByRole } from "./data.js";
+import { loadAllRosters, rosterForShift, groupByRole, loadSyncLog } from "./data.js";
 import { shiftAt, nextShiftAfter, describeShift } from "./shifts.js";
 
 const DEMO_STORAGE_KEY = "hghNdl.demoMode";
@@ -24,6 +24,7 @@ const state = {
   rows: [],
   diagnostics: [],
   lastLoaded: null,
+  syncLog: { attending: null, resident: null, student: null },
   // null => track real time; Date => user picked a time
   selectedWhen: null,
   demoMode: initialDemoMode(),
@@ -182,28 +183,35 @@ function render() {
   renderStatus();
 }
 
+function fmtSyncTime(d) {
+  if (!d) return "never synced";
+  return d.toLocaleString(undefined, {
+    weekday: "short", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
 function renderStatus() {
-  const parts = state.diagnostics.map((d) =>
-    d.ok ? `${d.name}: ${d.count} rows` : `${d.name}: error — ${d.error}`
-  );
-  const total = state.rows.length;
-  const updatedStr = state.lastLoaded
-    ? state.lastLoaded.toLocaleString(undefined, {
-        weekday: "short", month: "short", day: "numeric",
-        hour: "2-digit", minute: "2-digit",
-      })
-    : "never";
-  document.getElementById("status").textContent =
-    `Last updated: ${updatedStr}  ·  ${parts.join(" | ") || "(none configured)"}  ·  ${total} roster entries`;
+  const log = state.syncLog;
+  const lines = [
+    `Attendings last synced: ${fmtSyncTime(log.attending)}`,
+    `Residents last synced: ${fmtSyncTime(log.resident)}`,
+    `Students last synced: ${fmtSyncTime(log.student)}`,
+  ];
+  document.getElementById("status").textContent = lines.join("\n");
 }
 
 // ---------- Data loading ----------
 
 async function reload() {
   try {
-    const { rows, diagnostics } = await loadAllRosters({ demoMode: state.demoMode });
+    const [{ rows, diagnostics }, syncLog] = await Promise.all([
+      loadAllRosters({ demoMode: state.demoMode }),
+      loadSyncLog(),
+    ]);
     state.rows = rows;
     state.diagnostics = diagnostics;
+    state.syncLog = syncLog;
     state.lastLoaded = new Date();
   } catch (err) {
     state.diagnostics = [{ name: "loader", ok: false, error: String(err) }];

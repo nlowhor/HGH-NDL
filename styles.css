@@ -189,6 +189,7 @@ main {
   border-radius: 0 0 12px 12px;
   padding: 12px 12px 16px;
   box-shadow: var(--shadow);
+  overflow: hidden;
 }
 
 .shift-section__head {
@@ -211,6 +212,11 @@ main {
   grid-template-columns: 1fr 1fr 1fr;
   gap: 12px;
   align-items: start;
+  min-width: 0;
+}
+
+.role-col {
+  min-width: 0;
 }
 
 .role-col h3 {
@@ -243,8 +249,9 @@ main {
 }
 
 .card__photo {
-  width: 200px;
-  height: 200px;
+  width: clamp(100px, 30%, 200px);
+  height: auto;
+  aspect-ratio: 1;
   border-radius: 50%;
   background: var(--panel-2) center/cover no-repeat;
   border: 3px solid var(--border);
@@ -302,7 +309,7 @@ main {
 
   .card { padding: 16px 18px; gap: 18px; }
 
-  .card__photo { width: 280px; height: 280px; font-size: 110px; }
+  .card__photo { width: clamp(140px, 30%, 280px); font-size: clamp(56px, 11%, 110px); }
 
   .card__firstname { font-size: 28px; }
   .card__lastname  { font-size: 22px; }
@@ -315,7 +322,7 @@ main {
 
   .card { padding: 20px 22px; gap: 22px; border-radius: 14px; }
 
-  .card__photo { width: 360px; height: 360px; font-size: 140px; }
+  .card__photo { width: clamp(180px, 30%, 360px); font-size: clamp(72px, 11%, 140px); }
 
   .card { gap: 28px; }
 
@@ -338,7 +345,7 @@ main {
     gap: 16px;
   }
 
-  .card__photo { width: 140px; height: 140px; font-size: 54px; }
+  .card__photo { width: clamp(80px, 30%, 140px); font-size: clamp(30px, 11%, 54px); }
 
   .card__firstname { font-size: 20px; }
   .card__lastname  { font-size: 16px; }

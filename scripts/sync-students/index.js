@@ -26,6 +26,7 @@ const AIRTABLE_BASE_ID = 'appXHrYewBeH8Rwmh';
 const AIRTABLE_API     = 'https://api.airtable.com/v0';
 
 const ROSTER_TAB   = 'roster';
+const SYNC_LOG_TAB = 'sync_log';
 const STUDENT_ROLE = 'student';
 const DAYS_BEHIND  = 1;
 const DAYS_AHEAD   = 60;
@@ -584,6 +585,31 @@ async function persistPhotosToPages(photos) {
   return { byFullName, byLastName };
 }
 
+// ── Sync log ──────────────────────────────────────────────────────────────────
+
+async function writeSyncTimestamp(sheets, spreadsheetId, role) {
+  const now = new Date().toISOString();
+  let rows = [];
+  try {
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: SYNC_LOG_TAB });
+    rows = res.data.values || [];
+  } catch {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title: SYNC_LOG_TAB } } }] },
+    });
+  }
+  if (!rows.length) rows = [['role', 'updated_at']];
+  const idx = rows.findIndex((r, i) => i > 0 && r[0] === role);
+  if (idx >= 0) rows[idx][1] = now;
+  else rows.push([role, now]);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${SYNC_LOG_TAB}!A1`,
+    valueInputOption: 'RAW', requestBody: { values: rows },
+  });
+  console.log(`Sync log: ${role} updated_at ${now}`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -608,10 +634,12 @@ async function main() {
     return rawPhotos;
   });
 
+  const sheets = google.sheets({ version: 'v4', auth });
   await Promise.all([
     writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos),
     writeStudentsTab(auth, process.env.CANONICAL_SHEET_ID, photos),
   ]);
+  await writeSyncTimestamp(sheets, process.env.CANONICAL_SHEET_ID, STUDENT_ROLE);
   console.log(`\nDone.`);
 }
 
