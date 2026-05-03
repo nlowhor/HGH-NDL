@@ -240,16 +240,16 @@ main {
   align-items: center;
   gap: 14px;
   text-align: left;
-  overflow: hidden;
 }
 
 .card__photo {
-  width: 200px;
-  height: 200px;
+  /* 42% of card width — always large, always leaves room for the name */
+  flex: 0 0 42%;
+  width: 42%;
+  aspect-ratio: 1;
   border-radius: 50%;
   background: var(--panel-2) center/cover no-repeat;
   border: 3px solid var(--border);
-  flex: 0 0 auto;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -266,10 +266,11 @@ main {
 }
 
 .card__info {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  gap: 3px;
 }
 
 .card__firstname {
@@ -303,7 +304,7 @@ main {
 
   .card { padding: 16px 18px; gap: 18px; }
 
-  .card__photo { width: 280px; height: 280px; font-size: 110px; }
+  .card__photo { font-size: 72px; }
 
   .card__firstname { font-size: 28px; }
   .card__lastname  { font-size: 22px; }
@@ -316,9 +317,7 @@ main {
 
   .card { padding: 20px 22px; gap: 22px; border-radius: 14px; }
 
-  .card__photo { width: 360px; height: 360px; font-size: 140px; }
-
-  .card { gap: 28px; }
+  .card__photo { font-size: 96px; }
 
   .card__firstname { font-size: 36px; }
   .card__lastname  { font-size: 28px; }
@@ -329,10 +328,9 @@ main {
   .shift-section__meta { font-size: 26px; }
 }
 
-/* ── Mobile / narrow screens ─────────────────────────────────────────────────── */
+/* ── Mobile (phone portrait) ─────────────────────────────────────────────────── */
 
-/* Single column when 3×200 px photos + gaps would overflow (~680 px threshold). */
-@media (max-width: 680px) {
+@media (max-width: 500px) {
   .topbar h1 { font-size: 16px; }
 
   .roles {
@@ -340,7 +338,7 @@ main {
     gap: 16px;
   }
 
-  .card__photo { width: 160px; height: 160px; font-size: 62px; }
+  .card__photo { font-size: 38px; }
 
   .card__firstname { font-size: 22px; }
   .card__lastname  { font-size: 17px; }
