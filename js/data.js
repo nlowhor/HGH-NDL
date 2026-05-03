@@ -115,6 +115,29 @@ export function rosterForShift(rows, instance) {
   return rows.filter((r) => r.date === instance.date && r.shift === instance.name);
 }
 
+// Non-primary / specialty shift patterns — sorted after main shift doctors.
+const SUB_SHIFT_RE = /fast.?track|[a-z][- ]?swing|pit\b/i;
+
+function shiftSortKey(r) {
+  const text = `${r.shift || ""} ${r.notes || ""} ${r.title || ""}`;
+  const nonPrimary = SUB_SHIFT_RE.test(text);
+  // Extract a trailing number or single letter for Day 1/2 or Swing A/B ordering.
+  const m = text.match(/\b(\d+|[A-Z])\b(?=[^A-Z\d]*$)/i);
+  const suffix = m ? m[1].toUpperCase() : "";
+  return [nonPrimary ? 1 : 0, suffix, r.name];
+}
+
+function cmpKeys([a0, a1, a2], [b0, b1, b2]) {
+  if (a0 !== b0) return a0 - b0;
+  if (a1 !== b1) {
+    // Numbers before letters; sort numerically if both numeric.
+    const an = parseInt(a1, 10), bn = parseInt(b1, 10);
+    if (!isNaN(an) && !isNaN(bn)) return an - bn;
+    return a1.localeCompare(b1);
+  }
+  return a2.localeCompare(b2);
+}
+
 // Group rows by role, preserving roles order from config.
 export function groupByRole(rows) {
   const byRole = {};
@@ -122,14 +145,8 @@ export function groupByRole(rows) {
   for (const r of rows) {
     if (byRole[r.role]) byRole[r.role].push(r);
   }
-  // Sort: backup entries last, then alphabetically by name.
-  const isBackup = (r) => /backup/i.test(r.notes);
   for (const k of Object.keys(byRole)) {
-    byRole[k].sort((a, b) => {
-      const ba = isBackup(a), bb = isBackup(b);
-      if (ba !== bb) return ba ? 1 : -1;
-      return a.name.localeCompare(b.name);
-    });
+    byRole[k].sort((a, b) => cmpKeys(shiftSortKey(a), shiftSortKey(b)));
   }
   return byRole;
 }

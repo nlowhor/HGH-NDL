@@ -23,6 +23,7 @@ function initialDemoMode() {
 const state = {
   rows: [],
   diagnostics: [],
+  lastLoaded: null,
   // null => track real time; Date => user picked a time
   selectedWhen: null,
   demoMode: initialDemoMode(),
@@ -70,7 +71,6 @@ function isSeniorResident(row) {
 }
 
 function personCard(row, seniorResidents = []) {
-  const backup = isBackup(row);
   const photo = el("div", { class: "card__photo" });
   if (row.photo_url) {
     const img = el("img", { src: row.photo_url, alt: row.name, loading: "lazy" });
@@ -85,19 +85,17 @@ function personCard(row, seniorResidents = []) {
   }
   const [firstName, ...rest] = row.name.trim().split(/\s+/);
   const lastName = rest.join(" ");
-  const meta = [row.title, row.notes].filter(Boolean).join(" · ");
   let pairLine = null;
   if (row.role === "student" && seniorResidents.length) {
     const names = seniorResidents.map((r) => r.name.split(/\s+/)[0]).join(" or ");
     pairLine = el("div", { class: "card__pair" }, `Paired with ${names}`);
   }
-  return el("div", { class: backup ? "card card--backup" : "card" }, [
-    photo,
+  const info = el("div", { class: "card__info" }, [
     el("div", { class: "card__firstname" }, firstName),
     lastName ? el("div", { class: "card__lastname" }, lastName) : null,
-    meta ? el("div", { class: "card__meta" }, meta) : null,
     pairLine,
   ]);
+  return el("div", { class: "card" }, [photo, info]);
 }
 
 function renderColumn(targetKey, rows, seniorResidents = []) {
@@ -183,8 +181,14 @@ function renderStatus() {
     d.ok ? `${d.name}: ${d.count} rows` : `${d.name}: error — ${d.error}`
   );
   const total = state.rows.length;
+  const updatedStr = state.lastLoaded
+    ? state.lastLoaded.toLocaleString(undefined, {
+        weekday: "short", month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      })
+    : "never";
   document.getElementById("status").textContent =
-    `Sources — ${parts.join(" | ") || "(none configured)"}\nTotal roster entries loaded: ${total}`;
+    `Last updated: ${updatedStr}  ·  ${parts.join(" | ") || "(none configured)"}  ·  ${total} roster entries`;
 }
 
 // ---------- Data loading ----------
@@ -194,8 +198,8 @@ async function reload() {
     const { rows, diagnostics } = await loadAllRosters({ demoMode: state.demoMode });
     state.rows = rows;
     state.diagnostics = diagnostics;
-
-} catch (err) {
+    state.lastLoaded = new Date();
+  } catch (err) {
     state.diagnostics = [{ name: "loader", ok: false, error: String(err) }];
   }
   render();
