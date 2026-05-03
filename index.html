@@ -3,36 +3,39 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ER Staff On Shift</title>
+  <title>HGH Emergency Department</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="topbar__left">
-      <h1>Emergency Department — On Shift</h1>
+      <h1>HGH Emergency Department</h1>
       <div id="clock" class="clock" aria-live="polite"></div>
     </div>
-    <div class="topbar__right">
-      <label class="toggle" title="Show The Pitt sample cast instead of live data">
-        <input type="checkbox" id="demo-toggle" />
-        <span>Demo data</span>
-      </label>
-      <label class="picker">
-        <span>View time</span>
-        <input type="datetime-local" id="when" />
-      </label>
-      <button id="now-btn" type="button">Now</button>
-      <button id="refresh-btn" type="button" title="Reload from sources">Refresh data</button>
-    </div>
+    <details class="settings-panel">
+      <summary class="settings-toggle" title="Settings" aria-label="Settings">&#9881;</summary>
+      <div class="settings-content">
+        <label class="toggle" title="Show The Pitt sample cast instead of live data">
+          <input type="checkbox" id="demo-toggle" />
+          <span>Demo data</span>
+        </label>
+        <label class="picker">
+          <span>View time</span>
+          <input type="datetime-local" id="when" />
+        </label>
+        <button id="now-btn" type="button">Now</button>
+        <button id="refresh-btn" type="button">Refresh</button>
+      </div>
+    </details>
   </header>
 
   <main>
     <nav class="tabs-bar" role="tablist" aria-label="Shift view">
-      <button class="tab-btn tab-btn--active" data-tab="current" role="tab" aria-selected="true" aria-controls="current-section">Current</button>
-      <button class="tab-btn" data-tab="upcoming" role="tab" aria-selected="false" aria-controls="next-section">Upcoming</button>
+      <button class="tab-btn" data-tab="current" role="tab" aria-selected="false" aria-controls="current-section">Current</button>
+      <button class="tab-btn tab-btn--active" data-tab="upcoming" role="tab" aria-selected="true" aria-controls="next-section">Upcoming</button>
     </nav>
 
-    <section id="current-section" class="shift-section tab-panel tab-panel--active" role="tabpanel">
+    <section id="current-section" class="shift-section tab-panel" role="tabpanel">
       <div class="shift-section__head">
         <div id="current-meta" class="shift-section__meta"></div>
       </div>
@@ -52,7 +55,7 @@
       </div>
     </section>
 
-    <section id="next-section" class="shift-section tab-panel" role="tabpanel">
+    <section id="next-section" class="shift-section tab-panel tab-panel--active" role="tabpanel">
       <div class="shift-section__head">
         <div id="next-meta" class="shift-section__meta"></div>
       </div>
@@ -75,6 +78,6 @@
     <footer id="status" class="status"></footer>
   </main>
 
-  <script type="module" src="js/app.js?v=6"></script>
+  <script type="module" src="js/app.js?v=8"></script>
 </body>
 </html>

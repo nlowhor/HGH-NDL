@@ -226,9 +226,21 @@ function wire() {
     state.selectedWhen = null;
     input.value = toLocalInputValue(new Date());
     render();
+    document.querySelector('.settings-panel')?.removeAttribute('open');
   });
 
-  refreshBtn.addEventListener("click", () => { reload(); });
+  refreshBtn.addEventListener("click", () => {
+    reload();
+    document.querySelector('.settings-panel')?.removeAttribute('open');
+  });
+
+  // Close settings panel when clicking outside of it.
+  document.addEventListener("click", (e) => {
+    const panel = document.querySelector('.settings-panel');
+    if (panel && panel.open && !panel.contains(e.target)) {
+      panel.removeAttribute('open');
+    }
+  });
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
