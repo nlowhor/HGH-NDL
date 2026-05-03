@@ -243,9 +243,9 @@ main {
 }
 
 .card__photo {
-  /* 42% of card width — always large, always leaves room for the name */
-  flex: 0 0 42%;
-  width: 42%;
+  /* 55% of card width — large photo, name wraps to the right */
+  flex: 0 0 55%;
+  width: 55%;
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--panel-2) center/cover no-repeat;
@@ -275,13 +275,15 @@ main {
 
 .card__firstname {
   font-weight: 700;
-  font-size: 20px;
+  font-size: 17px;
   line-height: 1.2;
+  overflow-wrap: break-word;
 }
 .card__lastname {
   color: var(--muted);
-  font-size: 20px;
+  font-size: 15px;
   line-height: 1.3;
+  overflow-wrap: break-word;
 }
 .card__level {
   font-size: 16px;
@@ -306,10 +308,10 @@ main {
 
   .card__photo { font-size: 72px; }
 
-  .card__firstname { font-size: 28px; }
-  .card__lastname  { font-size: 22px; }
-  .card__level     { font-size: 18px; }
-  .card__pair      { font-size: 16px; }
+  .card__firstname { font-size: 22px; }
+  .card__lastname  { font-size: 18px; }
+  .card__level     { font-size: 15px; }
+  .card__pair      { font-size: 14px; }
 }
 
 @media (min-width: 1400px) {
@@ -319,10 +321,10 @@ main {
 
   .card__photo { font-size: 96px; }
 
-  .card__firstname { font-size: 36px; }
-  .card__lastname  { font-size: 28px; }
-  .card__level     { font-size: 22px; }
-  .card__pair      { font-size: 20px; }
+  .card__firstname { font-size: 28px; }
+  .card__lastname  { font-size: 22px; }
+  .card__level     { font-size: 18px; }
+  .card__pair      { font-size: 16px; }
 
   .role-col h3         { font-size: 22px; }
   .shift-section__meta { font-size: 26px; }
