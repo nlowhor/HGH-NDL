@@ -85,6 +85,11 @@ function personCard(row, seniorResidents = []) {
   }
   const [firstName, ...rest] = row.name.trim().split(/\s+/);
   const lastName = rest.join(" ");
+  let levelLine = null;
+  if (row.role === "resident" && row.title) {
+    const m = row.title.match(/\b(R[1-4]|PGY-?[1-4])\b/i);
+    if (m) levelLine = el("div", { class: "card__level" }, m[1].toUpperCase().replace("PGY", "PGY-"));
+  }
   let pairLine = null;
   if (row.role === "student" && seniorResidents.length) {
     const names = seniorResidents.map((r) => r.name.split(/\s+/)[0]).join(" or ");
@@ -93,6 +98,7 @@ function personCard(row, seniorResidents = []) {
   const info = el("div", { class: "card__info" }, [
     el("div", { class: "card__firstname" }, firstName),
     lastName ? el("div", { class: "card__lastname" }, lastName) : null,
+    levelLine,
     pairLine,
   ]);
   return el("div", { class: "card" }, [photo, info]);
