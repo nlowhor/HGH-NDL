@@ -71,18 +71,60 @@ function isSeniorResident(row) {
   );
 }
 
+function isJuniorResident(row) {
+  return (
+    row.role === "resident" &&
+    /\b(r[12]|pgy-?[12])\b/i.test(row.title || "") &&
+    !isBackup(row) &&
+    !/\bcho\b/i.test(row.notes || "")
+  );
+}
+
 function shiftLabel(notes) {
   if (!notes) return null;
-  // Strip time ranges like "7a - 4p", "7a-4p", "7:00-15:00"
+  // Strip time ranges and pairing markers (-res/-att) — markers are only
+  // for pairing logic and should not be shown on the card.
   const stripped = notes
     .replace(/\s*\d{1,2}(?::\d{2})?\s*[ap]m?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*[ap]m?/gi, '')
+    .replace(/\s+-(?:res|att)\b/gi, '')
     .replace(/\s+/g, ' ').trim();
   return stripped || null;
 }
 
-function personCard(row, seniorResidents = []) {
-  // matched_name is the display name from the person tab (may differ from the
-  // schedule name stored in row.name — e.g. after a user edits the person tab).
+// Returns Map<studentRow, partnerRow[]>. Four rules:
+//   1 student + 1 senior resident  → pairs to that senior
+//   1 student + 2 seniors          → pairs to either (show both names)
+//   2 students + 2 seniors         → student[0] → senior[0], student[1] → senior[1]
+//   2 students + 1 senior + ≥1 R2  → -res student → senior, -att student → first main attending
+function computeStudentPairings(students, residents, attendings) {
+  const pairings = new Map();
+  const seniors = residents.filter(isSeniorResident);
+  const juniors = residents.filter(isJuniorResident);
+  const mainAttending = attendings.filter(
+    (r) => !isBackup(r) && !/fast.?track|[a-z][- ]swing\b/i.test(r.notes || "")
+  );
+
+  const n = students.length;
+  const s = seniors.length;
+
+  if (n === 1 && s === 1) {
+    pairings.set(students[0], [seniors[0]]);
+  } else if (n === 1 && s >= 2) {
+    pairings.set(students[0], seniors.slice(0, 2));
+  } else if (n === 2 && s >= 2) {
+    pairings.set(students[0], [seniors[0]]);
+    pairings.set(students[1], [seniors[1]]);
+  } else if (n === 2 && s === 1 && juniors.length >= 1) {
+    const resStudent = students.find((s) => /-res\b/i.test(s.notes || "")) || students[0];
+    const attStudent = students.find((s) => /-att\b/i.test(s.notes || "")) || students[1];
+    pairings.set(resStudent, [seniors[0]]);
+    if (mainAttending.length) pairings.set(attStudent, [mainAttending[0]]);
+  }
+
+  return pairings;
+}
+
+function personCard(row, partners = []) {
   const displayName = (row.matched_name || row.name).trim();
   const photo = el("div", { class: "card__photo" });
   if (row.photo_url) {
@@ -104,8 +146,10 @@ function personCard(row, seniorResidents = []) {
     if (m) levelLine = el("div", { class: "card__level" }, m[1].toUpperCase().replace("PGY", "PGY-"));
   }
   let pairLine = null;
-  if (row.role === "student" && seniorResidents.length) {
-    const names = seniorResidents.map((r) => r.name.split(/\s+/)[0]).join(" or ");
+  if (partners.length) {
+    const names = partners
+      .map((p) => (p.matched_name || p.name).trim().split(/\s+/)[0])
+      .join(" or ");
     pairLine = el("div", { class: "card__pair" }, `Paired with ${names}`);
   }
   const label = shiftLabel(row.notes);
@@ -119,7 +163,7 @@ function personCard(row, seniorResidents = []) {
   return el("div", { class: "card" }, [photo, info]);
 }
 
-function renderColumn(targetKey, rows, seniorResidents = []) {
+function renderColumn(targetKey, rows, pairingsMap = new Map()) {
   const host = document.querySelector(`[data-target="${targetKey}"]`);
   if (!host) return;
   host.innerHTML = "";
@@ -127,7 +171,7 @@ function renderColumn(targetKey, rows, seniorResidents = []) {
     host.appendChild(el("div", { class: "empty" }, "No one listed."));
     return;
   }
-  for (const r of rows) host.appendChild(personCard(r, seniorResidents));
+  for (const r of rows) host.appendChild(personCard(r, pairingsMap.get(r) || []));
 }
 
 // ---------- Shift relative label ----------
@@ -184,11 +228,14 @@ function render() {
   document.getElementById("shift-meta").textContent = describeShift(viewed);
 
   const groups = groupByRole(filterOffsite(rosterForShift(state.rows, viewed)));
-  const seniors = (groups["resident"] || []).filter(isSeniorResident);
+  const pairings = computeStudentPairings(
+    groups["student"]   || [],
+    groups["resident"]  || [],
+    groups["attending"] || [],
+  );
 
   for (const role of config.roles) {
-    const sr = role.key === "student" ? seniors : [];
-    renderColumn(`shift.${role.key}`, groups[role.key] || [], sr);
+    renderColumn(`shift.${role.key}`, groups[role.key] || [], pairings);
   }
 
   renderStatus();
