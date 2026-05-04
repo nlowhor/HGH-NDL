@@ -49,6 +49,49 @@ function normalizeName(s) {
     .join(' ');
 }
 
+// Convert a 0-based column index to a spreadsheet letter (A, B, …, Z, AA, …).
+function colLetter(idx) {
+  let r = '', i = idx + 1;
+  while (i > 0) { i--; r = String.fromCharCode(65 + (i % 26)) + r; i = Math.floor(i / 26); }
+  return r;
+}
+
+// Ensure a column exists in the roster header; add it if missing and return its index.
+async function ensureRosterColumn(sheets, spreadsheetId, headers, colName) {
+  let idx = headers.indexOf(colName);
+  if (idx >= 0) return idx;
+  idx = headers.length;
+  headers.push(colName);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${ROSTER_TAB}!1:1`,
+    valueInputOption: 'RAW', requestBody: { values: [headers] },
+  });
+  console.log(`Added "${colName}" column to ${ROSTER_TAB} header.`);
+  return idx;
+}
+
+// Write IFERROR(INDEX/MATCH) formulas into the matched_name column for a run of rows.
+// Person tabs must have name in column A and schedule_name in column E.
+async function writeMatchedNameFormulas(sheets, spreadsheetId, roleCol, nameCol, matchedNameCol, startRow, count) {
+  if (count === 0) return;
+  const rc = colLetter(roleCol), nc = colLetter(nameCol), mc = colLetter(matchedNameCol);
+  const vals = [];
+  for (let r = startRow; r < startRow + count; r++) {
+    vals.push([
+      `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$A:$A,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
+      `IF(${rc}${r}="student",IFERROR(INDEX(students!$A:$A,MATCH(${nc}${r},students!$E:$E,0)),""),` +
+      `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$A:$A,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
+    ]);
+  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range:            `${mc}${startRow}:${mc}${startRow + count - 1}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody:      { values: vals },
+  });
+  console.log(`Wrote ${count} matched_name formula(s) at rows ${startRow}–${startRow + count - 1}.`);
+}
+
 const SHIFT_LABEL_MAP = {
   'RN DAY':     { shift: 'day',     notes: 'RN Day' },
   'DAY-BUP':    { shift: 'day',     notes: 'Day-BUP' },
@@ -471,31 +514,24 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     if (i < 0) throw new Error(`roster tab missing column: "${name}"`);
     return i;
   };
-  const roleCol        = col('role');
-  const dateCol        = col('date');
-  const shiftCol       = col('shift');
-  const nameCol        = col('name');
-  const titleCol       = headers.indexOf('title');
-  const photoCol       = headers.indexOf('photo_url');
-  const notesCol       = headers.indexOf('notes');
-  const matchedNameCol = headers.indexOf('matched_name');
+  const roleCol  = col('role');
+  const dateCol  = col('date');
+  const shiftCol = col('shift');
+  const nameCol  = col('name');
+  const titleCol = headers.indexOf('title');
+  const photoCol = headers.indexOf('photo_url');
+  const notesCol = headers.indexOf('notes');
+  // Ensure matched_name column exists (adds it to header if missing).
+  const matchedNameCol = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_name');
 
   // Read all rows and find student row indices to delete.
-  // Using deleteDimension (same as residents sync) instead of values.clear+update
-  // to avoid clobbering concurrent writes from other service accounts (e.g. Medrez).
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows   = allRes.data.values || [];
 
-  const toDelete     = [];
-  const savedMatched = {}; // normalised name → matched_name override
+  const toDelete = [];
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) {
       toDelete.push(i + 1); // 1-based sheet row number
-      if (matchedNameCol >= 0) {
-        const mn  = String(rows[i][matchedNameCol] || '').trim();
-        const key = normalizeName(String(rows[i][nameCol] || ''));
-        if (key && mn) savedMatched[key] = mn;
-      }
     }
   }
   console.log(`Deleting ${toDelete.length} existing student row(s)…`);
@@ -523,24 +559,24 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   const newRows = entries.map(e => {
     const normalName = normalizeName(e.name);
     const lastWord   = e.name.trim().split(/\s+/).pop().toLowerCase();
-    // Try full-name match first, then any-word match (handles first-name or last-name schedules).
     const match = byFullName.get(normalName) || byLastName.get(lastWord);
     const photo = match?.url || '';
     if (photo) photoHits++;
-    // When we have an Airtable record, use that name — it's more complete/correct
-    // than whatever abbreviation the schedule used.
     const rosterName = match ? match.name : e.name;
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = STUDENT_ROLE;
     row[nameCol]  = rosterName;
-    if (titleCol >= 0)       row[titleCol]       = e.title || '';
-    if (photoCol >= 0)       row[photoCol]       = photo;
-    if (notesCol >= 0)       row[notesCol]       = e.notes || '';
-    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[normalizeName(rosterName)] || '';
+    if (titleCol >= 0) row[titleCol] = e.title || '';
+    if (photoCol >= 0) row[photoCol] = photo;
+    if (notesCol >= 0) row[notesCol] = e.notes || '';
+    // matched_name: written as formula in a separate USER_ENTERED call below.
     return row;
   });
+
+  // Track row count before append so we know where the new rows land.
+  const preAppendRows = rows.length - toDelete.length;
 
   await sheets.spreadsheets.values.append({
     spreadsheetId,
@@ -548,6 +584,12 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     valueInputOption: 'RAW',
     requestBody: { values: newRows },
   });
+
+  // Write VLOOKUP formulas into matched_name for the newly appended rows.
+  await writeMatchedNameFormulas(
+    sheets, spreadsheetId, roleCol, nameCol, matchedNameCol,
+    preAppendRows + 1, newRows.length,
+  );
 
   console.log(`Appended ${newRows.length} student row(s) (${photoHits} with photo_url).`);
   return newRows.length;
@@ -572,49 +614,51 @@ async function writeStudentsTab(auth, spreadsheetId, photos) {
     console.log(`Created "${STUDENTS_TAB}" tab.`);
   }
 
-  // Read existing tab so we can preserve user-edited columns (title, notes) and
-  // any non-Airtable photo URLs the user may have set manually.
-  const existingByName = new Map(); // normalizeName → { title, notes, photo_url }
+  // Read existing tab so we can preserve user-edited columns and stable schedule_name.
+  const existingByName = new Map();
   if (existing) {
     const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: STUDENTS_TAB });
     const vals = res.data.values || [];
     if (vals.length > 1) {
       const hdrs = vals[0].map(h => String(h).toLowerCase().trim());
       const ni = hdrs.indexOf('name'), pi = hdrs.indexOf('photo_url'),
-            ti = hdrs.indexOf('title'), xi = hdrs.indexOf('notes');
+            ti = hdrs.indexOf('title'), xi = hdrs.indexOf('notes'),
+            si = hdrs.indexOf('schedule_name');
       for (let i = 1; i < vals.length; i++) {
         const r = vals[i];
         const name = (r[ni] || '').trim();
         if (!name) continue;
         existingByName.set(normalizeName(name), {
-          photo_url: pi >= 0 ? (r[pi] || '').trim() : '',
-          title:     ti >= 0 ? (r[ti] || '').trim() : '',
-          notes:     xi >= 0 ? (r[xi] || '').trim() : '',
+          name,
+          photo_url:     pi >= 0 ? (r[pi] || '').trim() : '',
+          title:         ti >= 0 ? (r[ti] || '').trim() : '',
+          notes:         xi >= 0 ? (r[xi] || '').trim() : '',
+          schedule_name: si >= 0 ? (r[si] || '').trim() : '',
         });
       }
     }
   }
 
   // Upsert: merge sync data with existing rows.
-  // Rule: use sync photo_url if existing is empty or an Airtable URL (expiring).
-  //       Preserve any non-Airtable URL the user set manually.
-  //       Never overwrite title or notes set by the user.
   const merged = new Map(existingByName);
   for (const [, entry] of byFullName) {
     const key = normalizeName(entry.name);
     const ex  = existingByName.get(key) || {};
     const useNewPhoto = !ex.photo_url || /airtable\.com|airtableusercontent\.com/i.test(ex.photo_url);
     merged.set(key, {
-      name:      entry.name,
-      photo_url: useNewPhoto ? (entry.url || ex.photo_url || '') : ex.photo_url,
-      title:     ex.title || '',
-      notes:     ex.notes || '',
+      name:          entry.name,
+      photo_url:     useNewPhoto ? (entry.url || ex.photo_url || '') : ex.photo_url,
+      title:         ex.title || '',
+      notes:         ex.notes || '',
+      // schedule_name set once from the Airtable name (= what goes in the roster);
+      // never overwritten so users can freely rename the display name.
+      schedule_name: ex.schedule_name || entry.name,
     });
   }
 
   // Preserve names from existing tab that the sync didn't touch (manually added).
   for (const [key, ex] of existingByName) {
-    if (!merged.has(key)) merged.set(key, { name: ex.name || key, ...ex });
+    if (!merged.has(key)) merged.set(key, { name: ex.name || key, ...ex, schedule_name: ex.schedule_name || ex.name || key });
   }
 
   const entries = Array.from(merged.values())
@@ -622,8 +666,8 @@ async function writeStudentsTab(auth, spreadsheetId, photos) {
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const rows = [
-    ['name', 'photo_url', 'title', 'notes'],
-    ...entries.map(e => [e.name, e.photo_url, e.title, e.notes]),
+    ['name', 'photo_url', 'title', 'notes', 'schedule_name'],
+    ...entries.map(e => [e.name, e.photo_url, e.title, e.notes, e.schedule_name]),
   ];
 
   await sheets.spreadsheets.values.clear({ spreadsheetId, range: STUDENTS_TAB });
