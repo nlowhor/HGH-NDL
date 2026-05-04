@@ -25,6 +25,11 @@ const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
 const AIRTABLE_BASE_ID = 'appXHrYewBeH8Rwmh';
 const AIRTABLE_API     = 'https://api.airtable.com/v0';
 
+// Published CSV of the student clerkship schedule Google Sheet.
+// Override with STUDENT_SCHEDULE_CSV_URL env var if the URL changes.
+const STUDENT_SCHEDULE_CSV_URL = process.env.STUDENT_SCHEDULE_CSV_URL ||
+  'https://docs.google.com/spreadsheets/d/e/2PACX-1vSm3KBhIKMDOIbhgrZxqCT963rMssxTyh9vzDZiLxy4vbPWX-8A5luNoyKhSbDT3gJU5vMat8Bo552j/pub?gid=1506284669&single=true&output=csv';
+
 const ROSTER_TAB   = 'roster';
 const SYNC_LOG_TAB = 'sync_log';
 const STUDENT_ROLE = 'student';
@@ -54,6 +59,13 @@ const SHIFT_LABEL_MAP = {
   'NIGHT':      { shift: 'night',   notes: '' },
   'NIGHTS':     { shift: 'night',   notes: '' },
 };
+
+// Schedule uses DAY-res, DAY-att, SWING-res, SWING-att etc. — strip the
+// resident/attending suffix before looking up so these map correctly.
+function lookupShift(rawLabel) {
+  const upper = rawLabel.toUpperCase();
+  return SHIFT_LABEL_MAP[upper] || SHIFT_LABEL_MAP[upper.replace(/-(RES|ATT)$/, '')];
+}
 
 const SKIP_LABEL = /^(orientation|bridge|conference|lecture|holiday|off|em |bup$)/i;
 const SKIP_NAME  = /^(student|ucsf|ms|slot|resident|attending)\s*\d*$/i;
@@ -97,45 +109,72 @@ function yearFromTabName(name) {
   return null;
 }
 
+// Minimal CSV parser — handles quoted fields with embedded commas/newlines.
+function parseCsv(text) {
+  const rows = [];
+  let row = [], field = '', inQuote = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') { inQuote = false; }
+      else { field += ch; }
+    } else if (ch === '"') {
+      inQuote = true;
+    } else if (ch === ',') {
+      row.push(field.trim()); field = '';
+    } else if (ch === '\n') {
+      row.push(field.trim()); rows.push(row); row = []; field = '';
+    } else if (ch === '\r') {
+      // ignore bare CR
+    } else {
+      field += ch;
+    }
+  }
+  if (field || row.length) { row.push(field.trim()); rows.push(row); }
+  return rows;
+}
+
 // ── Schedule parsing ──────────────────────────────────────────────────────────
 
 function parseScheduleTab(rows, tabName) {
   const hintYear = yearFromTabName(tabName);
   const entries  = [];
 
+  // Find rotation year: prefer tab name hint, then scan for "Rotation Start Date" cell.
   let rotationYear = hintYear;
-  for (const row of rows) {
-    for (let c = 0; c < row.length - 1; c++) {
-      if (/rotation start date/i.test(String(row[c] || ''))) {
-        const raw = String(row[c + 1] || '');
-        const d   = parseDate(raw, hintYear);
-        if (d) {
-          const parsedYear = parseInt(d.slice(0, 4), 10);
-          // Prefer hintYear from tab name when the cell year conflicts —
-          // "5/4/25" in a tab named "#Block 1 (5/4-5/31/26)" likely means
-          // the cell has a stale year; the tab name is more reliable.
-          rotationYear = hintYear || parsedYear;
-          console.log(`  Rotation start date raw="${raw}" → parsed year ${parsedYear}, using ${rotationYear}`);
+  if (!rotationYear) {
+    for (const row of rows) {
+      for (let c = 0; c < row.length; c++) {
+        if (/rotation start date/i.test(String(row[c] || ''))) {
+          // Search remaining cells in this row for a parseable date.
+          for (let k = c + 1; k < row.length; k++) {
+            const raw = String(row[k] || '').trim();
+            if (!raw) continue;
+            const d = parseDate(raw, null);
+            if (d) { rotationYear = parseInt(d.slice(0, 4), 10); break; }
+          }
+          break;
         }
-        break;
       }
+      if (rotationYear) break;
     }
-    if (rotationYear) break;
   }
-  console.log(`  rotationYear for "${tabName}": ${rotationYear}`);
+  console.log(`  rotationYear for "${tabName || 'CSV'}": ${rotationYear}`);
 
   let i = 0;
   while (i < rows.length) {
     const row = rows[i] || [];
 
+    // Detect a "day header" row: ≥3 cells match known day abbreviations.
     const dayPositions = {};
     for (let c = 0; c < row.length; c++) {
       const v = String(row[c] || '').trim().toUpperCase();
       if (DAY_NAMES.includes(v)) dayPositions[v] = c;
     }
-
     if (Object.keys(dayPositions).length < 3) { i++; continue; }
 
+    // Next row holds the dates.
     const dateRow = rows[i + 1] || [];
     const dateMap = {};
     for (const [day, col] of Object.entries(dayPositions)) {
@@ -143,6 +182,26 @@ function parseScheduleTab(rows, tabName) {
       if (d) dateMap[day] = d;
     }
 
+    // Determine (labelCol, nameCol) for each day.
+    // The schedule layout puts label+name in the two columns immediately
+    // following a "wide" day header (MON), but for subsequent days the day
+    // header sits at the NAME column and the label is one column to the left.
+    // Detect which rule applies by looking at the gap to the next day.
+    const sortedDays = Object.entries(dayPositions).sort((a, b) => a[1] - b[1]);
+    const dayColMap = {}; // day → { labelCol, nameCol }
+    for (let d = 0; d < sortedDays.length; d++) {
+      const [day, col] = sortedDays[d];
+      const nextCol = d + 1 < sortedDays.length ? sortedDays[d + 1][1] : null;
+      if (nextCol !== null && nextCol - col >= 4) {
+        // Wide section: data starts after the header column.
+        dayColMap[day] = { labelCol: col + 1, nameCol: col + 2 };
+      } else {
+        // Narrow section: header is at the name column, label is one to the left.
+        dayColMap[day] = { labelCol: col - 1, nameCol: col };
+      }
+    }
+
+    // Consume data rows until the next week header (another row with ≥3 day names).
     let j = i + 2;
     while (j < rows.length) {
       const dataRow = rows[j] || [];
@@ -151,16 +210,16 @@ function parseScheduleTab(rows, tabName) {
       ).length;
       if (dayCount >= 3 && j > i + 2) break;
 
-      for (const [day, col] of Object.entries(dayPositions)) {
+      for (const [day, { labelCol, nameCol }] of Object.entries(dayColMap)) {
         const date = dateMap[day];
         if (!date) continue;
-        const rawLabel = String(dataRow[col]     || '').trim();
-        const rawName  = String(dataRow[col + 1] || '').trim();
+        const rawLabel = String(dataRow[labelCol] || '').trim();
+        const rawName  = String(dataRow[nameCol]  || '').trim();
         if (!rawLabel || !rawName) continue;
         if (SKIP_LABEL.test(rawLabel)) continue;
         if (SKIP_LABEL.test(rawName))  continue;
         if (SKIP_NAME.test(rawName))   continue;
-        const mapped = SHIFT_LABEL_MAP[rawLabel.toUpperCase()];
+        const mapped = lookupShift(rawLabel);
         if (!mapped) continue;
         entries.push({ date, shift: mapped.shift, role: STUDENT_ROLE,
           name: rawName, title: '', notes: mapped.notes, photo_url: '' });
@@ -173,19 +232,15 @@ function parseScheduleTab(rows, tabName) {
   return entries;
 }
 
-// ── Google Sheets — read student schedule ─────────────────────────────────────
+// ── CSV — read student schedule ───────────────────────────────────────────────
 
-async function fetchStudentSchedule(auth) {
-  const scheduleSheetId = process.env.STUDENT_SCHEDULE_SHEET_ID;
-  if (!scheduleSheetId) throw new Error('STUDENT_SCHEDULE_SHEET_ID env var is required.');
-
-  const sheets = google.sheets({ version: 'v4', auth });
-  const meta   = await sheets.spreadsheets.get({ spreadsheetId: scheduleSheetId });
-  const allTabs = meta.data.sheets.map(s => ({ id: s.properties.sheetId, title: s.properties.title }));
-  console.log(`Schedule sheet tabs: ${allTabs.map(t => t.title).join(', ')}`);
-
-  const tabs = allTabs.filter(t => /block/i.test(t.title));
-  console.log(`Rotation block tabs: ${tabs.map(t => t.title).join(', ')}`);
+async function fetchStudentSchedule() {
+  console.log(`Fetching student schedule from CSV: ${STUDENT_SCHEDULE_CSV_URL}`);
+  const res = await fetch(STUDENT_SCHEDULE_CSV_URL);
+  if (!res.ok) throw new Error(`Schedule CSV fetch failed: HTTP ${res.status}`);
+  const text = await res.text();
+  const rows = parseCsv(text);
+  console.log(`  CSV rows: ${rows.length}`);
 
   const today   = new Date();
   const from    = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
@@ -193,23 +248,17 @@ async function fetchStudentSchedule(auth) {
   const fromIso = from.toISOString().slice(0, 10);
   const toIso   = to.toISOString().slice(0, 10);
 
-  const allEntries = [];
-  for (const tab of tabs) {
-    const res     = await sheets.spreadsheets.values.get({ spreadsheetId: scheduleSheetId, range: tab.title });
-    const entries = parseScheduleTab(res.data.values || [], tab.title);
-    const inWindow = entries.filter(e => e.date >= fromIso && e.date <= toIso);
-    console.log(`  ${tab.title}: ${entries.length} parsed, ${inWindow.length} in window.`);
-    allEntries.push(...inWindow);
-  }
+  const entries   = parseScheduleTab(rows, '');
+  const inWindow  = entries.filter(e => e.date >= fromIso && e.date <= toIso);
+  console.log(`  Parsed: ${entries.length} total, ${inWindow.length} in window.`);
 
   const seen = new Set();
-  const deduped = allEntries.filter(e => {
+  const deduped = inWindow.filter(e => {
     const key = `${e.date}|${e.shift}|${e.name.toLowerCase()}`;
     if (seen.has(key)) return false;
     seen.add(key); return true;
   });
-
-  console.log(`Total student entries in window: ${deduped.length}`);
+  console.log(`Total student entries in window (deduped): ${deduped.length}`);
   return deduped;
 }
 
@@ -615,15 +664,14 @@ async function writeSyncTimestamp(sheets, spreadsheetId, role) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  if (!process.env.CANONICAL_SHEET_ID)        throw new Error('CANONICAL_SHEET_ID env var is required.');
-  if (!process.env.STUDENT_SCHEDULE_SHEET_ID) throw new Error('STUDENT_SCHEDULE_SHEET_ID env var is required.');
+  if (!process.env.CANONICAL_SHEET_ID)          throw new Error('CANONICAL_SHEET_ID env var is required.');
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
   const auth = await getAuth();
 
   const emptyPhotos = { byFullName: new Map(), byLastName: new Map() };
   const [entries, rawPhotos] = await Promise.all([
-    fetchStudentSchedule(auth),
+    fetchStudentSchedule(),
     fetchStudentPhotos().catch(err => {
       console.warn('Photo fetch failed (continuing without photos):', err.message);
       return emptyPhotos;
