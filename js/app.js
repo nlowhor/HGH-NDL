@@ -210,21 +210,21 @@ function renderPairsColumn(targetKey, students, residents, pairings) {
     const attParts = partners.filter((p) => p.role === "attending");
 
     if (resParts.length) {
-      // Paired with resident(s): show side by side in a shared frame.
-      const cards = el("div", { class: "pair-group__cards" });
-      cards.appendChild(personCard(student));           // no label; visual grouping says it
-      for (const r of resParts) cards.appendChild(personCard(r));
-      host.appendChild(el("div", { class: "pair-group" }, [cards]));
+      // Paired: resident + student side by side in a shared frame spanning both sub-columns.
+      const inner = el("div", { class: "pair-group__inner" });
+      for (const r of resParts) inner.appendChild(personCard(r));
+      inner.appendChild(personCard(student));
+      host.appendChild(el("div", { class: "pair-group pair-group--paired" }, [inner]));
     } else {
-      // Solo student — show "Paired with" label if paired with an attending.
-      host.appendChild(el("div", { class: "pair-group" }, [personCard(student, attParts)]));
+      // Solo student in the right sub-column. Show "Paired with" if paired with an attending.
+      host.appendChild(el("div", { class: "pair-group pair-group--student" }, [personCard(student, attParts)]));
     }
   }
 
-  // Unpaired residents follow after the pair groups.
+  // Unpaired residents go in the left sub-column.
   for (const resident of residents) {
     if (!pairedResidents.has(resident)) {
-      host.appendChild(el("div", { class: "pair-group" }, [personCard(resident)]));
+      host.appendChild(el("div", { class: "pair-group pair-group--resident" }, [personCard(resident)]));
     }
   }
 
