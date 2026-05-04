@@ -193,12 +193,12 @@ function parseScheduleTab(rows, tabName) {
     for (let d = 0; d < sortedDays.length; d++) {
       const [day, col] = sortedDays[d];
       const nextCol = d + 1 < sortedDays.length ? sortedDays[d + 1][1] : null;
-      if (nextCol !== null && nextCol - col >= 4) {
-        // Wide section: data starts after the header column.
+      if (nextCol !== null && nextCol - col >= 3) {
+        // Wide section (e.g. MON): label and name follow the header column.
         dayColMap[day] = { labelCol: col + 1, nameCol: col + 2 };
       } else {
-        // Narrow section: header is at the name column, label is one to the left.
-        dayColMap[day] = { labelCol: col - 1, nameCol: col };
+        // Narrow section (Tue–Sun): header column holds the label, next col is name.
+        dayColMap[day] = { labelCol: col, nameCol: col + 1 };
       }
     }
 
