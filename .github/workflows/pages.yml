@@ -7,8 +7,6 @@ on:
   push:
     branches:
       - main
-      - claude/hospital-er-staff-display-rqHvl
-      - claude/fix-resident-headshots-GNd82
       - claude/fix-empty-text-blocks-RxgzT
   workflow_dispatch:
 
