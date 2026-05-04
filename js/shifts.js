@@ -87,4 +87,18 @@ export function describeShift(instance) {
   return `${weekday} · ${def.label} (${s}–${e})`;
 }
 
+// Returns the shift instance that precedes the given one.
+export function prevShiftBefore(instance) {
+  const shifts = config.shifts;
+  const idx = shifts.findIndex((s) => s.name === instance.name);
+  if (idx === -1) return instance;
+  const prevIdx = (idx - 1 + shifts.length) % shifts.length;
+  const prevDef = shifts[prevIdx];
+  // Wrapping backward (day→night) means the previous shift is on the prior calendar day.
+  const [y, m, d] = instance.date.split("-").map(Number);
+  const localDate = new Date(y, m - 1, d);
+  const prevDate = prevIdx > idx ? isoDate(addDays(localDate, -1)) : instance.date;
+  return { name: prevDef.name, label: prevDef.label, date: prevDate };
+}
+
 export { shiftStartDate, shiftEndDate };

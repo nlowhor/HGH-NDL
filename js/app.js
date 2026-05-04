@@ -3,7 +3,7 @@
 
 import { config } from "./config.js";
 import { loadAllRosters, rosterForShift, groupByRole, loadSyncLog } from "./data.js";
-import { shiftAt, nextShiftAfter, describeShift } from "./shifts.js";
+import { shiftAt, nextShiftAfter, prevShiftBefore, describeShift, shiftStartDate } from "./shifts.js";
 
 const DEMO_STORAGE_KEY = "hghNdl.demoMode";
 
@@ -238,6 +238,15 @@ function toLocalInputValue(d) {
          `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function navigateShift(direction) {
+  const current = shiftAt(currentWhen());
+  const target = direction === "prev" ? prevShiftBefore(current) : nextShiftAfter(current);
+  const shiftDef = config.shifts.find((s) => s.name === target.name);
+  state.selectedWhen = shiftStartDate(target.date, shiftDef);
+  document.getElementById("when").value = toLocalInputValue(state.selectedWhen);
+  render();
+}
+
 function wire() {
   const input = document.getElementById("when");
   const nowBtn = document.getElementById("now-btn");
@@ -270,6 +279,9 @@ function wire() {
       panel.removeAttribute('open');
     }
   });
+
+  document.getElementById("prev-shift-btn").addEventListener("click", () => navigateShift("prev"));
+  document.getElementById("next-shift-btn").addEventListener("click", () => navigateShift("next"));
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));

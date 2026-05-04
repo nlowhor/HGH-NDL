@@ -4,13 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>HGH Emergency Department</title>
-  <link rel="stylesheet" href="styles.css?v=10" />
+  <link rel="stylesheet" href="styles.css?v=11" />
 </head>
 <body>
   <header class="topbar">
     <div class="topbar__left">
       <h1>HGH Emergency Department</h1>
       <div id="clock" class="clock" aria-live="polite"></div>
+    </div>
+    <div class="shift-nav">
+      <button id="prev-shift-btn" class="shift-nav__btn" title="Previous shift">&#8249;</button>
+      <button id="next-shift-btn" class="shift-nav__btn" title="Next shift">&#8250;</button>
     </div>
     <details class="settings-panel">
       <summary class="settings-toggle" title="Settings" aria-label="Settings">&#9881;</summary>
@@ -78,6 +82,6 @@
     <footer id="status" class="status"></footer>
   </main>
 
-  <script type="module" src="js/app.js?v=13"></script>
+  <script type="module" src="js/app.js?v=14"></script>
 </body>
 </html>

@@ -18,9 +18,9 @@ export const config = {
 
   // Roles shown as columns, in display order.
   roles: [
-    { key: "attending", label: "Attendings" },
-    { key: "resident",  label: "Residents"  },
     { key: "student",   label: "Medical Students" },
+    { key: "resident",  label: "Residents"  },
+    { key: "attending", label: "Attendings" },
   ],
 
   // Refresh interval for the clock + "now" recomputation (ms).
