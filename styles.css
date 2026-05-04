@@ -214,7 +214,7 @@ main {
 
 .roles {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
@@ -234,6 +234,42 @@ main {
   flex-direction: column;
   gap: 10px;
   min-height: 40px;
+}
+
+/* ── Pairs column (students + residents together) ────────────────────────────── */
+
+.pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 40px;
+}
+
+/* Container for one paired group or a solo card. */
+.pair-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Two cards side by side with a shared visual frame. */
+.pair-group__cards {
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  background: rgba(78, 163, 255, 0.05);
+  border: 1px solid rgba(78, 163, 255, 0.2);
+  border-radius: 14px;
+}
+
+.pair-group__cards > .card {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Slightly smaller photo when two cards share a row. */
+.pair-group__cards .card__photo {
+  flex: 0 0 45%;
+  width: 45%;
 }
 
 .card {
@@ -351,6 +387,15 @@ main {
   .roles {
     grid-template-columns: 1fr;
     gap: 16px;
+  }
+
+  .pair-group__cards {
+    flex-direction: column;
+  }
+
+  .pair-group__cards .card__photo {
+    flex: 0 0 55%;
+    width: 55%;
   }
 
   .card__photo { font-size: 38px; }

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>HGH Emergency Department</title>
-  <link rel="stylesheet" href="styles.css?v=13" />
+  <link rel="stylesheet" href="styles.css?v=14" />
 </head>
 <body>
   <header class="topbar">
@@ -40,13 +40,9 @@
         <div id="shift-meta" class="shift-section__meta"></div>
       </div>
       <div class="roles">
-        <div class="role-col" data-role="student">
-          <h3>Medical Students</h3>
-          <div class="cards" data-target="shift.student"></div>
-        </div>
-        <div class="role-col" data-role="resident">
-          <h3>Residents</h3>
-          <div class="cards" data-target="shift.resident"></div>
+        <div class="role-col role-col--pairs">
+          <h3>Students &amp; Residents</h3>
+          <div class="pairs" data-target="shift.pairs"></div>
         </div>
         <div class="role-col" data-role="attending">
           <h3>Attendings</h3>

@@ -190,6 +190,49 @@ function renderColumn(targetKey, rows, pairingsMap = new Map()) {
   for (const r of rows) host.appendChild(personCard(r, pairingsMap.get(r) || []));
 }
 
+// Renders the combined students+residents column.
+// Paired student+resident are shown side-by-side inside a shared container.
+// Students paired with an attending (rule 4) and unpaired people render solo.
+function renderPairsColumn(targetKey, students, residents, pairings) {
+  const host = document.querySelector(`[data-target="${targetKey}"]`);
+  if (!host) return;
+  host.innerHTML = "";
+
+  // Track which residents are consumed by a pair group.
+  const pairedResidents = new Set();
+  for (const partners of pairings.values()) {
+    for (const p of partners) { if (p.role === "resident") pairedResidents.add(p); }
+  }
+
+  for (const student of students) {
+    const partners = pairings.get(student) || [];
+    const resParts = partners.filter((p) => p.role === "resident");
+    const attParts = partners.filter((p) => p.role === "attending");
+
+    if (resParts.length) {
+      // Paired with resident(s): show side by side in a shared frame.
+      const cards = el("div", { class: "pair-group__cards" });
+      cards.appendChild(personCard(student));           // no label; visual grouping says it
+      for (const r of resParts) cards.appendChild(personCard(r));
+      host.appendChild(el("div", { class: "pair-group" }, [cards]));
+    } else {
+      // Solo student — show "Paired with" label if paired with an attending.
+      host.appendChild(el("div", { class: "pair-group" }, [personCard(student, attParts)]));
+    }
+  }
+
+  // Unpaired residents follow after the pair groups.
+  for (const resident of residents) {
+    if (!pairedResidents.has(resident)) {
+      host.appendChild(el("div", { class: "pair-group" }, [personCard(resident)]));
+    }
+  }
+
+  if (!host.children.length) {
+    host.appendChild(el("div", { class: "empty" }, "No one listed."));
+  }
+}
+
 // ---------- Shift relative label ----------
 
 function shiftRelativeLabel(viewed, nowShift) {
@@ -250,9 +293,8 @@ function render() {
     groups["attending"] || [],
   );
 
-  for (const role of config.roles) {
-    renderColumn(`shift.${role.key}`, groups[role.key] || [], pairings);
-  }
+  renderPairsColumn("shift.pairs", groups["student"] || [], groups["resident"] || [], pairings);
+  renderColumn("shift.attending", groups["attending"] || []);
 
   renderStatus();
 }
