@@ -58,8 +58,8 @@ export const config = {
     // When set, the app reads photo_url and title from these tabs and joins them onto
     // roster rows by name, so editing a person here updates every shift they appear in.
     personSheetUrls: {
-      student:   null,
-      resident:  null,
+      student:   "https://docs.google.com/spreadsheets/d/e/2PACX-1vQNmwF87H6dQZvru4z3JfUFFASk9a8xheUgwPxY5w_TGGiD-oVr2xWpnipqnRqSQ8zr8XBi0RTyR8UJ/pub?gid=328345555&single=true&output=csv",
+      resident:  "https://docs.google.com/spreadsheets/d/e/2PACX-1vQNmwF87H6dQZvru4z3JfUFFASk9a8xheUgwPxY5w_TGGiD-oVr2xWpnipqnRqSQ8zr8XBi0RTyR8UJ/pub?gid=687329166&single=true&output=csv",
       attending: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQNmwF87H6dQZvru4z3JfUFFASk9a8xheUgwPxY5w_TGGiD-oVr2xWpnipqnRqSQ8zr8XBi0RTyR8UJ/pub?gid=1133961770&single=true&output=csv",
     },
 
