@@ -81,19 +81,22 @@ function shiftLabel(notes) {
 }
 
 function personCard(row, seniorResidents = []) {
+  // matched_name is the display name from the person tab (may differ from the
+  // schedule name stored in row.name — e.g. after a user edits the person tab).
+  const displayName = (row.matched_name || row.name).trim();
   const photo = el("div", { class: "card__photo" });
   if (row.photo_url) {
-    const img = el("img", { src: row.photo_url, alt: row.name, loading: "lazy" });
+    const img = el("img", { src: row.photo_url, alt: displayName, loading: "lazy" });
     img.addEventListener("error", () => {
-      console.warn("[headshot] failed to load:", row.photo_url, "for", row.name);
+      console.warn("[headshot] failed to load:", row.photo_url, "for", displayName);
       photo.innerHTML = "";
-      photo.textContent = initials(row.name);
+      photo.textContent = initials(displayName);
     });
     photo.appendChild(img);
   } else {
-    photo.textContent = initials(row.name);
+    photo.textContent = initials(displayName);
   }
-  const [firstName, ...rest] = row.name.trim().split(/\s+/);
+  const [firstName, ...rest] = displayName.split(/\s+/);
   const lastName = rest.join(" ");
   let levelLine = null;
   if (row.role === "resident" && row.title) {
