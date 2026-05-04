@@ -3,68 +3,54 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ER Staff On Shift</title>
-  <link rel="stylesheet" href="styles.css" />
+  <title>HGH Emergency Department</title>
+  <link rel="stylesheet" href="styles.css?v=12" />
 </head>
 <body>
   <header class="topbar">
     <div class="topbar__left">
-      <h1>Emergency Department — On Shift</h1>
+      <h1>HGH Emergency Department</h1>
       <div id="clock" class="clock" aria-live="polite"></div>
     </div>
-    <div class="topbar__right">
-      <label class="toggle" title="Show The Pitt sample cast instead of live data">
-        <input type="checkbox" id="demo-toggle" />
-        <span>Demo data</span>
-      </label>
-      <label class="picker">
-        <span>View time</span>
-        <input type="datetime-local" id="when" />
-      </label>
-      <button id="now-btn" type="button">Now</button>
-      <button id="refresh-btn" type="button" title="Reload from sources">Refresh data</button>
-    </div>
+    <nav class="shift-nav" aria-label="Shift navigation">
+      <button id="prev-shift-btn" class="shift-nav__btn">&#8592; Previous</button>
+      <button id="now-btn" class="shift-nav__btn shift-nav__btn--now">Now</button>
+      <button id="next-shift-btn" class="shift-nav__btn">Next &#8594;</button>
+    </nav>
+    <details class="settings-panel">
+      <summary class="settings-toggle" title="Settings" aria-label="Settings">&#9881;</summary>
+      <div class="settings-content">
+        <label class="toggle" title="Show The Pitt sample cast instead of live data">
+          <input type="checkbox" id="demo-toggle" />
+          <span>Demo data</span>
+        </label>
+        <label class="picker">
+          <span>View time</span>
+          <input type="datetime-local" id="when" />
+        </label>
+        <button id="refresh-btn" type="button">Refresh</button>
+      </div>
+    </details>
   </header>
 
   <main>
-    <section id="current-section" class="shift-section">
-      <header class="shift-section__head">
-        <h2>Current shift</h2>
-        <div id="current-meta" class="shift-section__meta"></div>
-      </header>
-      <div class="roles">
-        <div class="role-col" data-role="attending">
-          <h3>Attendings</h3>
-          <div class="cards" data-target="current.attending"></div>
-        </div>
-        <div class="role-col" data-role="resident">
-          <h3>Residents</h3>
-          <div class="cards" data-target="current.resident"></div>
-        </div>
-        <div class="role-col" data-role="student">
-          <h3>Medical Students</h3>
-          <div class="cards" data-target="current.student"></div>
-        </div>
+    <section id="shift-section" class="shift-section">
+      <div class="shift-section__head">
+        <div id="shift-relative" class="shift-section__label"></div>
+        <div id="shift-meta" class="shift-section__meta"></div>
       </div>
-    </section>
-
-    <section id="next-section" class="shift-section next">
-      <header class="shift-section__head">
-        <h2>Next shift</h2>
-        <div id="next-meta" class="shift-section__meta"></div>
-      </header>
       <div class="roles">
-        <div class="role-col" data-role="attending">
-          <h3>Attendings</h3>
-          <div class="cards" data-target="next.attending"></div>
+        <div class="role-col" data-role="student">
+          <h3>Medical Students</h3>
+          <div class="cards" data-target="shift.student"></div>
         </div>
         <div class="role-col" data-role="resident">
           <h3>Residents</h3>
-          <div class="cards" data-target="next.resident"></div>
+          <div class="cards" data-target="shift.resident"></div>
         </div>
-        <div class="role-col" data-role="student">
-          <h3>Medical Students</h3>
-          <div class="cards" data-target="next.student"></div>
+        <div class="role-col" data-role="attending">
+          <h3>Attendings</h3>
+          <div class="cards" data-target="shift.attending"></div>
         </div>
       </div>
     </section>
@@ -72,6 +58,6 @@
     <footer id="status" class="status"></footer>
   </main>
 
-  <script type="module" src="js/app.js"></script>
+  <script type="module" src="js/app.js?v=15"></script>
 </body>
 </html>
