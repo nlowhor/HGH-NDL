@@ -471,13 +471,14 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     if (i < 0) throw new Error(`roster tab missing column: "${name}"`);
     return i;
   };
-  const roleCol  = col('role');
-  const dateCol  = col('date');
-  const shiftCol = col('shift');
-  const nameCol  = col('name');
-  const titleCol = headers.indexOf('title');
-  const photoCol = headers.indexOf('photo_url');
-  const notesCol = headers.indexOf('notes');
+  const roleCol        = col('role');
+  const dateCol        = col('date');
+  const shiftCol       = col('shift');
+  const nameCol        = col('name');
+  const titleCol       = headers.indexOf('title');
+  const photoCol       = headers.indexOf('photo_url');
+  const notesCol       = headers.indexOf('notes');
+  const matchedNameCol = headers.indexOf('matched_name');
 
   // Read all rows and find student row indices to delete.
   // Using deleteDimension (same as residents sync) instead of values.clear+update
@@ -485,10 +486,16 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows   = allRes.data.values || [];
 
-  const toDelete = [];
+  const toDelete     = [];
+  const savedMatched = {}; // normalised name → matched_name override
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) {
       toDelete.push(i + 1); // 1-based sheet row number
+      if (matchedNameCol >= 0) {
+        const mn  = String(rows[i][matchedNameCol] || '').trim();
+        const key = normalizeName(String(rows[i][nameCol] || ''));
+        if (key && mn) savedMatched[key] = mn;
+      }
     }
   }
   console.log(`Deleting ${toDelete.length} existing student row(s)…`);
@@ -528,9 +535,10 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     row[shiftCol] = e.shift;
     row[roleCol]  = STUDENT_ROLE;
     row[nameCol]  = rosterName;
-    if (titleCol >= 0) row[titleCol] = e.title || '';
-    if (photoCol >= 0) row[photoCol] = photo;
-    if (notesCol >= 0) row[notesCol] = e.notes || '';
+    if (titleCol >= 0)       row[titleCol]       = e.title || '';
+    if (photoCol >= 0)       row[photoCol]       = photo;
+    if (notesCol >= 0)       row[notesCol]       = e.notes || '';
+    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[normalizeName(rosterName)] || '';
     return row;
   });
 
@@ -688,11 +696,21 @@ async function main() {
   if (!process.env.CANONICAL_SHEET_ID)          throw new Error('CANONICAL_SHEET_ID env var is required.');
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
+  const personTabOnly = process.env.PERSON_TAB_ONLY === 'true';
   const auth = await getAuth();
 
   const emptyPhotos = { byFullName: new Map(), byLastName: new Map() };
+
+  let entriesPromise;
+  if (personTabOnly) {
+    console.log('PERSON_TAB_ONLY=true — skipping schedule sync.');
+    entriesPromise = Promise.resolve([]);
+  } else {
+    entriesPromise = fetchStudentSchedule();
+  }
+
   const [entries, rawPhotos] = await Promise.all([
-    fetchStudentSchedule(),
+    entriesPromise,
     fetchStudentPhotos().catch(err => {
       console.warn('Photo fetch failed (continuing without photos):', err.message);
       return emptyPhotos;
@@ -706,12 +724,17 @@ async function main() {
   });
 
   const sheets = google.sheets({ version: 'v4', auth });
-  await Promise.all([
-    writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos),
-    writeStudentsTab(auth, process.env.CANONICAL_SHEET_ID, photos),
-  ]);
-  await writeSyncTimestamp(sheets, process.env.CANONICAL_SHEET_ID, STUDENT_ROLE);
-  console.log(`\nDone.`);
+  if (!personTabOnly) {
+    await Promise.all([
+      writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos),
+      writeStudentsTab(auth, process.env.CANONICAL_SHEET_ID, photos),
+    ]);
+    await writeSyncTimestamp(sheets, process.env.CANONICAL_SHEET_ID, STUDENT_ROLE);
+    console.log(`\nDone.`);
+  } else {
+    await writeStudentsTab(auth, process.env.CANONICAL_SHEET_ID, photos);
+    console.log('\nDone. Students person tab updated (schedule unchanged).');
+  }
 }
 
 main().catch(err => { console.error(err); process.exit(1); });
