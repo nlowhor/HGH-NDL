@@ -160,8 +160,6 @@ function parseScheduleTab(rows, tabName) {
       if (rotationYear) break;
     }
   }
-  console.log(`  rotationYear for "${tabName || 'CSV'}": ${rotationYear}`);
-
   let i = 0;
   while (i < rows.length) {
     const row = rows[i] || [];
@@ -173,7 +171,6 @@ function parseScheduleTab(rows, tabName) {
       if (DAY_NAMES.includes(v)) dayPositions[v] = c;
     }
     if (Object.keys(dayPositions).length < 3) { i++; continue; }
-    console.log(`  Found day header at row ${i}: ${JSON.stringify(dayPositions)}`);
 
     // Next row holds the dates.
     const dateRow = rows[i + 1] || [];
@@ -201,9 +198,6 @@ function parseScheduleTab(rows, tabName) {
         dayColMap[day] = { labelCol: col, nameCol: col + 1 };
       }
     }
-
-    console.log(`  dateMap: ${JSON.stringify(dateMap)}`);
-    console.log(`  dayColMap: ${JSON.stringify(dayColMap)}`);
 
     // Consume data rows until the next week header (another row with ≥3 day names).
     let j = i + 2;
@@ -244,11 +238,6 @@ async function fetchStudentSchedule() {
   if (!res.ok) throw new Error(`Schedule CSV fetch failed: HTTP ${res.status}`);
   const text = await res.text();
   const rows = parseCsv(text);
-  console.log(`  CSV rows: ${rows.length}`);
-
-  // Log first 15 rows to diagnose structure.
-  rows.slice(0, 15).forEach((r, i) =>
-    console.log(`  row[${i}] (${r.length} fields): ${JSON.stringify(r.slice(0, 20))}`));
 
   const today   = new Date();
   const from    = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
@@ -258,7 +247,6 @@ async function fetchStudentSchedule() {
 
   const entries   = parseScheduleTab(rows, '');
   const inWindow  = entries.filter(e => e.date >= fromIso && e.date <= toIso);
-  console.log(`  Parsed: ${entries.length} total, ${inWindow.length} in window.`);
 
   const seen = new Set();
   const deduped = inWindow.filter(e => {
@@ -266,7 +254,7 @@ async function fetchStudentSchedule() {
     if (seen.has(key)) return false;
     seen.add(key); return true;
   });
-  console.log(`Total student entries in window (deduped): ${deduped.length}`);
+  console.log(`Students parsed: ${entries.length} total, ${inWindow.length} in window, ${deduped.length} deduped.`);
   return deduped;
 }
 
