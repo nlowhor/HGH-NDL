@@ -91,33 +91,49 @@ function shiftLabel(notes) {
   return stripped || null;
 }
 
-// Returns Map<studentRow, partnerRow[]>. Four rules:
+function isFastTrack(row) {
+  return /fast.?track/i.test(row.notes || "");
+}
+
+// Returns Map<studentRow, partnerRow[]>.
+// Fast-track students pair with fast-track R3/R4s by position.
+// Main-shift students follow four rules:
 //   1 student + 1 senior resident  → pairs to that senior
 //   1 student + 2 seniors          → pairs to either (show both names)
 //   2 students + 2 seniors         → student[0] → senior[0], student[1] → senior[1]
 //   2 students + 1 senior + ≥1 R2  → -res student → senior, -att student → first main attending
 function computeStudentPairings(students, residents, attendings) {
   const pairings = new Map();
-  const seniors = residents.filter(isSeniorResident);
-  const juniors = residents.filter(isJuniorResident);
+
+  // Fast-track sub-shift: pair by position.
+  const ftStudents = students.filter(isFastTrack);
+  const ftSeniors  = residents.filter(
+    (r) => !isBackup(r) && /\b(r[34]|pgy-?[34])\b/i.test(r.title || "") && isFastTrack(r)
+  );
+  ftStudents.forEach((st, i) => { if (ftSeniors[i]) pairings.set(st, [ftSeniors[i]]); });
+
+  // Main-shift: apply the four rules.
+  const mainStudents  = students.filter((s) => !isFastTrack(s));
+  const mainSeniors   = residents.filter(isSeniorResident);
+  const juniors       = residents.filter(isJuniorResident);
   const mainAttending = attendings.filter(
     (r) => !isBackup(r) && !/fast.?track|[a-z][- ]swing\b/i.test(r.notes || "")
   );
 
-  const n = students.length;
-  const s = seniors.length;
+  const n = mainStudents.length;
+  const s = mainSeniors.length;
 
   if (n === 1 && s === 1) {
-    pairings.set(students[0], [seniors[0]]);
+    pairings.set(mainStudents[0], [mainSeniors[0]]);
   } else if (n === 1 && s >= 2) {
-    pairings.set(students[0], seniors.slice(0, 2));
+    pairings.set(mainStudents[0], mainSeniors.slice(0, 2));
   } else if (n === 2 && s >= 2) {
-    pairings.set(students[0], [seniors[0]]);
-    pairings.set(students[1], [seniors[1]]);
+    pairings.set(mainStudents[0], [mainSeniors[0]]);
+    pairings.set(mainStudents[1], [mainSeniors[1]]);
   } else if (n === 2 && s === 1 && juniors.length >= 1) {
-    const resStudent = students.find((s) => /-res\b/i.test(s.notes || "")) || students[0];
-    const attStudent = students.find((s) => /-att\b/i.test(s.notes || "")) || students[1];
-    pairings.set(resStudent, [seniors[0]]);
+    const resStudent = mainStudents.find((s) => /-res\b/i.test(s.notes || "")) || mainStudents[0];
+    const attStudent = mainStudents.find((s) => /-att\b/i.test(s.notes || "")) || mainStudents[1];
+    pairings.set(resStudent, [mainSeniors[0]]);
     if (mainAttending.length) pairings.set(attStudent, [mainAttending[0]]);
   }
 
