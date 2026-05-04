@@ -214,7 +214,7 @@ async function reload() {
   try {
     const [{ rows, diagnostics }, syncLog] = await Promise.all([
       loadAllRosters({ demoMode: state.demoMode }),
-      loadSyncLog(),
+      loadSyncLog().catch(() => state.syncLog),
     ]);
     state.rows = rows;
     state.diagnostics = diagnostics;

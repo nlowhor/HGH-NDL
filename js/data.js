@@ -80,6 +80,26 @@ export function rosterForShift(rows, instance) {
   return rows.filter((r) => r.date === instance.date && r.shift === instance.name);
 }
 
+// Returns last-synced timestamps per role by reading the sync_log CSV if
+// configured, or falls back to nulls (displayed as "never synced").
+export async function loadSyncLog() {
+  const url = config.sources?.syncLogCsvUrl;
+  if (!url) return { attending: null, resident: null, student: null };
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return { attending: null, resident: null, student: null };
+    const text = await res.text();
+    const log = { attending: null, resident: null, student: null };
+    for (const line of text.split('\n').slice(1)) {
+      const [role, ts] = line.split(',').map(s => s.trim());
+      if (role && ts && log[role] !== undefined) log[role] = new Date(ts);
+    }
+    return log;
+  } catch {
+    return { attending: null, resident: null, student: null };
+  }
+}
+
 // Group rows by role, preserving roles order from config.
 export function groupByRole(rows) {
   const byRole = {};
