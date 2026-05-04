@@ -103,11 +103,22 @@ const SHIFT_LABEL_MAP = {
   'NIGHTS':     { shift: 'night',   notes: '' },
 };
 
-// Schedule uses DAY-res, DAY-att, SWING-res, SWING-att etc. — strip the
-// resident/attending suffix before looking up so these map correctly.
+// Schedule uses DAY-RES, DAY-ATT, SWING-RES, SWING-ATT etc.
+// When the suffix is present, look up the base shift and append it to notes
+// so the pairing logic can identify which track the student is on.
 function lookupShift(rawLabel) {
   const upper = rawLabel.toUpperCase();
-  return SHIFT_LABEL_MAP[upper] || SHIFT_LABEL_MAP[upper.replace(/-(RES|ATT)$/, '')];
+  if (SHIFT_LABEL_MAP[upper]) return SHIFT_LABEL_MAP[upper];
+  const slotMatch = upper.match(/^(.*?)-(RES|ATT)$/);
+  if (slotMatch) {
+    const base = SHIFT_LABEL_MAP[slotMatch[1]];
+    if (base) {
+      const marker = `-${slotMatch[2].toLowerCase()}`; // '-res' or '-att'
+      const notes = [base.notes, marker].filter(Boolean).join(' ');
+      return { shift: base.shift, notes };
+    }
+  }
+  return null;
 }
 
 const SKIP_LABEL = /^(orientation|bridge|conference|lecture|holiday|off|em |bup$)/i;
