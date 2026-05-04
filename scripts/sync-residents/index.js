@@ -294,28 +294,33 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
     if (i < 0) throw new Error(`roster tab missing column: "${name}"`);
     return i;
   };
-  const roleCol  = col('role');
-  const dateCol  = col('date');
-  const shiftCol = col('shift');
-  const nameCol  = col('name');
-  const titleCol = headers.indexOf('title');
-  const photoCol = headers.indexOf('photo_url');
-  const notesCol = headers.indexOf('notes');
+  const roleCol         = col('role');
+  const dateCol         = col('date');
+  const shiftCol        = col('shift');
+  const nameCol         = col('name');
+  const titleCol        = headers.indexOf('title');
+  const photoCol        = headers.indexOf('photo_url');
+  const notesCol        = headers.indexOf('notes');
+  const matchedNameCol  = headers.indexOf('matched_name');
 
-  // Read all rows; preserve any photo_url already in the sheet for residents
-  // (e.g. manually entered URLs that the Drive lookup wouldn't cover).
+  // Read all rows; preserve any photo_url and matched_name already in the sheet.
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows   = allRes.data.values || [];
 
-  const toDelete    = [];
-  const savedPhotos = {}; // normalised name → photo_url
+  const toDelete       = [];
+  const savedPhotos    = {}; // normalised name → photo_url
+  const savedMatched   = {}; // normalised name → matched_name override
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === RESIDENT_ROLE) {
       toDelete.push(i + 1);
+      const key = normalizeName(String(rows[i][nameCol] || ''));
       if (photoCol >= 0) {
-        const name  = normalizeName(String(rows[i][nameCol] || ''));
         const photo = String(rows[i][photoCol] || '').trim();
-        if (name && photo) savedPhotos[name] = photo;
+        if (key && photo) savedPhotos[key] = photo;
+      }
+      if (matchedNameCol >= 0) {
+        const mn = String(rows[i][matchedNameCol] || '').trim();
+        if (key && mn) savedMatched[key] = mn;
       }
     }
   }
@@ -357,9 +362,10 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
     row[shiftCol] = e.shift;
     row[roleCol]  = RESIDENT_ROLE;
     row[nameCol]  = e.name;
-    if (titleCol >= 0) row[titleCol] = e.title || '';
-    if (photoCol >= 0) row[photoCol] = photo;
-    if (notesCol >= 0) row[notesCol] = e.notes || '';
+    if (titleCol >= 0)       row[titleCol]       = e.title || '';
+    if (photoCol >= 0)       row[photoCol]       = photo;
+    if (notesCol >= 0)       row[notesCol]       = e.notes || '';
+    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[normalizeName(e.name)] || '';
     return row;
   });
 

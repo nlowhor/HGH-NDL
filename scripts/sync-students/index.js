@@ -462,13 +462,14 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     if (i < 0) throw new Error(`roster tab missing column: "${name}"`);
     return i;
   };
-  const roleCol  = col('role');
-  const dateCol  = col('date');
-  const shiftCol = col('shift');
-  const nameCol  = col('name');
-  const titleCol = headers.indexOf('title');
-  const photoCol = headers.indexOf('photo_url');
-  const notesCol = headers.indexOf('notes');
+  const roleCol        = col('role');
+  const dateCol        = col('date');
+  const shiftCol       = col('shift');
+  const nameCol        = col('name');
+  const titleCol       = headers.indexOf('title');
+  const photoCol       = headers.indexOf('photo_url');
+  const notesCol       = headers.indexOf('notes');
+  const matchedNameCol = headers.indexOf('matched_name');
 
   // Read entire sheet, strip student rows, append new ones, then rewrite.
   // This avoids fragile row-index deletion (deleteDimension fails when row
@@ -477,8 +478,17 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   const rows     = allRes.data.values || [];
   const kept     = rows.slice(0, 1); // header row always kept
   let  removed   = 0;
+  const savedMatched = {}; // normalised name → matched_name override
   for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) { removed++; continue; }
+    if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) {
+      removed++;
+      if (matchedNameCol >= 0) {
+        const mn  = String(rows[i][matchedNameCol] || '').trim();
+        const key = normalizeName(String(rows[i][nameCol] || ''));
+        if (key && mn) savedMatched[key] = mn;
+      }
+      continue;
+    }
     kept.push(rows[i]);
   }
   console.log(`Removed ${removed} existing student row(s).`);
@@ -510,9 +520,10 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     row[shiftCol] = e.shift;
     row[roleCol]  = STUDENT_ROLE;
     row[nameCol]  = rosterName;
-    if (titleCol >= 0) row[titleCol] = e.title || '';
-    if (photoCol >= 0) row[photoCol] = photo;
-    if (notesCol >= 0) row[notesCol] = e.notes || '';
+    if (titleCol >= 0)       row[titleCol]       = e.title || '';
+    if (photoCol >= 0)       row[photoCol]       = photo;
+    if (notesCol >= 0)       row[notesCol]       = e.notes || '';
+    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[normalizeName(rosterName)] || '';
     return row;
   });
 

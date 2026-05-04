@@ -119,7 +119,8 @@ export async function loadAllRosters({ demoMode = false } = {}) {
     ]);
     const maps = { student: studentMap, resident: residentMap, attending: attendingMap };
     for (const r of rows) {
-      const person = maps[r.role]?.get(normalizeName(r.name));
+      const lookupName = (r.matched_name || '').trim() || r.name;
+      const person = maps[r.role]?.get(normalizeName(lookupName));
       if (!person) continue;
       if (person.photo_url) r.photo_url = person.photo_url;
       if (person.title)     r.title     = person.title;
