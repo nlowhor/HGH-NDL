@@ -8,6 +8,15 @@ import { fetchSheetRoster } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
 import { fetchWebsiteRoster } from "./sources/web.js";
 
+const OFFSITE_KEYWORDS = ["san leandro", "slh", "alameda", "cho"];
+function isOffsite(r) {
+  const text = [r.name, r.title, r.notes].filter(Boolean).join(" ").toLowerCase();
+  return OFFSITE_KEYWORDS.some((kw) => text.includes(kw));
+}
+function isBackupRow(r) {
+  return /backup/i.test(r.notes || "");
+}
+
 // Sort words so "James Nelson" and "Nelson James" both normalise the same way.
 function normalizeName(s) {
   return String(s || '').toLowerCase().trim()
@@ -105,7 +114,9 @@ export async function loadAllRosters({ demoMode = false } = {}) {
     await tryOne("Sample data (no live sources configured)", () => fetchSheetRoster(src.sampleCsvUrl));
   }
 
-  const rows = dedupe(buckets.flat());
+  const rows = dedupe(buckets.flat())
+    .filter((r) => !isOffsite(r))
+    .filter((r) => !isBackupRow(r));
 
   // Merge per-person data (photo_url, title) from dedicated role tabs when URLs
   // are configured. Person-tab values are authoritative: they override whatever

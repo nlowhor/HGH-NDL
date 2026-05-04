@@ -64,6 +64,7 @@ export function normalizeRows(rows) {
       shift,
       role,
       name,
+      matched_name: (r.matched_name || "").trim(),
       title: (r.title || "").trim(),
       notes: (r.notes || "").trim(),
       photo_url: photo,

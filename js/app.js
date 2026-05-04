@@ -246,14 +246,14 @@ function shiftRelativeLabel(viewed, nowShift) {
   return { text: viewStart > nowStart ? "Future Shift" : "Past Shift", current: false };
 }
 
-// ---------- Off-site filter (secondary safety net) ----------
-
+// Off-site and backup filtering is applied in data.js at load time.
+// This pass is a secondary safety net covering any rows that slipped through
+// (e.g. loaded from a source that bypasses loadAllRosters filtering).
 const OFFSITE_KEYWORDS = ['san leandro', 'slh', 'alameda', 'cho'];
 
 function filterOffsite(rows) {
   return rows.filter(r => {
-    if (r.role !== 'attending') return true;
-    const text = Object.values(r).filter(v => typeof v === 'string').join(' ').toLowerCase();
+    const text = [r.name, r.title, r.notes].filter(Boolean).join(' ').toLowerCase();
     return !OFFSITE_KEYWORDS.some(kw => text.includes(kw));
   });
 }
