@@ -533,10 +533,7 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
 const STUDENTS_TAB = 'students';
 
 async function writeStudentsTab(auth, spreadsheetId, photos) {
-  const { byFullName } = photos instanceof Map
-    ? { byFullName: new Map() }
-    : photos;
-
+  const { byFullName } = photos instanceof Map ? { byFullName: new Map() } : photos;
   const sheets = google.sheets({ version: 'v4', auth });
 
   // Ensure the tab exists (create it if missing).
@@ -550,37 +547,65 @@ async function writeStudentsTab(auth, spreadsheetId, photos) {
     console.log(`Created "${STUDENTS_TAB}" tab.`);
   }
 
-  // Build rows: header + one per student (sorted by name).
-  const entries = Array.from(byFullName.values()).sort((a, b) => a.name.localeCompare(b.name));
-  const rows = [
-    ['name', 'photo_url'],
-    ...entries.map(e => [e.name, e.url]),
-  ];
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${STUDENTS_TAB}!A1`,
-    valueInputOption: 'RAW',
-    requestBody: { values: rows },
-  });
-
-  // Clear any stale rows below the new data.
+  // Read existing tab so we can preserve user-edited columns (title, notes) and
+  // any non-Airtable photo URLs the user may have set manually.
+  const existingByName = new Map(); // normalizeName → { title, notes, photo_url }
   if (existing) {
-    const oldRowCount = existing.properties.gridProperties?.rowCount || 0;
-    if (oldRowCount > rows.length) {
-      const sheetId = existing.properties.sheetId;
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          requests: [{
-            deleteDimension: {
-              range: { sheetId, dimension: 'ROWS', startIndex: rows.length, endIndex: oldRowCount },
-            },
-          }],
-        },
-      });
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: STUDENTS_TAB });
+    const vals = res.data.values || [];
+    if (vals.length > 1) {
+      const hdrs = vals[0].map(h => String(h).toLowerCase().trim());
+      const ni = hdrs.indexOf('name'), pi = hdrs.indexOf('photo_url'),
+            ti = hdrs.indexOf('title'), xi = hdrs.indexOf('notes');
+      for (let i = 1; i < vals.length; i++) {
+        const r = vals[i];
+        const name = (r[ni] || '').trim();
+        if (!name) continue;
+        existingByName.set(normalizeName(name), {
+          photo_url: pi >= 0 ? (r[pi] || '').trim() : '',
+          title:     ti >= 0 ? (r[ti] || '').trim() : '',
+          notes:     xi >= 0 ? (r[xi] || '').trim() : '',
+        });
+      }
     }
   }
+
+  // Upsert: merge sync data with existing rows.
+  // Rule: use sync photo_url if existing is empty or an Airtable URL (expiring).
+  //       Preserve any non-Airtable URL the user set manually.
+  //       Never overwrite title or notes set by the user.
+  const merged = new Map(existingByName);
+  for (const [, entry] of byFullName) {
+    const key = normalizeName(entry.name);
+    const ex  = existingByName.get(key) || {};
+    const useNewPhoto = !ex.photo_url || /airtable\.com|airtableusercontent\.com/i.test(ex.photo_url);
+    merged.set(key, {
+      name:      entry.name,
+      photo_url: useNewPhoto ? (entry.url || ex.photo_url || '') : ex.photo_url,
+      title:     ex.title || '',
+      notes:     ex.notes || '',
+    });
+  }
+
+  // Preserve names from existing tab that the sync didn't touch (manually added).
+  for (const [key, ex] of existingByName) {
+    if (!merged.has(key)) merged.set(key, { name: ex.name || key, ...ex });
+  }
+
+  const entries = Array.from(merged.values())
+    .filter(e => e.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const rows = [
+    ['name', 'photo_url', 'title', 'notes'],
+    ...entries.map(e => [e.name, e.photo_url, e.title, e.notes]),
+  ];
+
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range: STUDENTS_TAB });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${STUDENTS_TAB}!A1`, valueInputOption: 'RAW',
+    requestBody: { values: rows },
+  });
 
   console.log(`"${STUDENTS_TAB}" tab: wrote ${entries.length} student record(s).`);
 }

@@ -25,6 +25,7 @@ const MEDREZ_URL   = `https://www.medrez.net/view.php?a=${MEDREZ_GROUP}`;
 const MEDREZ_PASS  = 'HGH5150';
 
 const ROSTER_TAB     = 'roster';
+const RESIDENTS_TAB  = 'residents';
 const RESIDENT_ROLE  = 'resident';
 const DAYS_BEHIND    = 1;   // include yesterday so nothing is missed
 const DAYS_AHEAD     = 60;  // fetch two months ahead
@@ -403,6 +404,85 @@ async function persistResidentPhotos(airtablePhotos) {
   return persisted;
 }
 
+// ── Google Sheets — write residents directory tab ─────────────────────────────
+
+// Upserts resident person data (name, photo_url, title, notes) into the
+// "residents" tab. Preserves any user-edited title/notes and any non-Airtable
+// photo URL the user may have set manually; sync only fills empty fields or
+// replaces expiring Airtable URLs with permanent ones.
+async function writeResidentsTab(sheets, spreadsheetId, entries, resolvedPhotos) {
+  // Ensure the tab exists.
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const existing = meta.data.sheets.find(s => s.properties.title === RESIDENTS_TAB);
+  if (!existing) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title: RESIDENTS_TAB } } }] },
+    });
+    console.log(`Created "${RESIDENTS_TAB}" tab.`);
+  }
+
+  // Read existing tab to preserve user edits.
+  const existingByName = new Map();
+  if (existing) {
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: RESIDENTS_TAB });
+    const vals = res.data.values || [];
+    if (vals.length > 1) {
+      const hdrs = vals[0].map(h => String(h).toLowerCase().trim());
+      const ni = hdrs.indexOf('name'), pi = hdrs.indexOf('photo_url'),
+            ti = hdrs.indexOf('title'), xi = hdrs.indexOf('notes');
+      for (let i = 1; i < vals.length; i++) {
+        const r = vals[i];
+        const name = (r[ni] || '').trim();
+        if (!name) continue;
+        existingByName.set(normalizeName(name), {
+          name,
+          photo_url: pi >= 0 ? (r[pi] || '').trim() : '',
+          title:     ti >= 0 ? (r[ti] || '').trim() : '',
+          notes:     xi >= 0 ? (r[xi] || '').trim() : '',
+        });
+      }
+    }
+  }
+
+  // Build a deduplicated person list from schedule entries.
+  const personMap = new Map();
+  for (const e of entries) {
+    const key = normalizeName(e.name);
+    if (!personMap.has(key)) {
+      const ex = existingByName.get(key) || {};
+      const syncPhoto = resolvedPhotos[key] || '';
+      const useNewPhoto = !ex.photo_url || /airtable\.com|airtableusercontent\.com/i.test(ex.photo_url);
+      personMap.set(key, {
+        name:      e.name,
+        photo_url: useNewPhoto ? (syncPhoto || ex.photo_url || '') : ex.photo_url,
+        title:     ex.title || e.title || '',
+        notes:     ex.notes || '',
+      });
+    }
+  }
+
+  // Preserve manually added entries not in the current schedule window.
+  for (const [key, ex] of existingByName) {
+    if (!personMap.has(key)) personMap.set(key, ex);
+  }
+
+  const rows = [
+    ['name', 'photo_url', 'title', 'notes'],
+    ...Array.from(personMap.values())
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(e => [e.name, e.photo_url, e.title, e.notes]),
+  ];
+
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range: RESIDENTS_TAB });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${RESIDENTS_TAB}!A1`, valueInputOption: 'RAW',
+    requestBody: { values: rows },
+  });
+
+  console.log(`"${RESIDENTS_TAB}" tab: wrote ${rows.length - 1} resident record(s).`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -443,7 +523,13 @@ async function main() {
     console.warn('Airtable resident photo lookup failed:', err.message);
   }
 
-  const n = await writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos);
+  // Merged photo map for the person tab (Airtable > Drive).
+  const resolvedPhotos = { ...drivePhotos, ...airtablePhotos };
+
+  const [n] = await Promise.all([
+    writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos),
+    writeResidentsTab(sheets, spreadsheetId, entries, resolvedPhotos),
+  ]);
   console.log(`\nDone. ${n} resident shift rows written to sheet.`);
 }
 

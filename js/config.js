@@ -53,6 +53,16 @@ export const config = {
       // { url: "https://example.org/er-schedule", adapter: "genericTable" },
     ],
 
+    // Published CSV URLs for per-person data tabs (students, residents, attendings).
+    // In Google Sheets: File → Share → Publish to web → select each tab → CSV → copy URL.
+    // When set, the app reads photo_url and title from these tabs and joins them onto
+    // roster rows by name, so editing a person here updates every shift they appear in.
+    personSheetUrls: {
+      student:   null,
+      resident:  null,
+      attending: null,
+    },
+
     // Local fallback used when no remote sources return data.
     // Keep this as a relative path so the static site works offline.
     sampleCsvUrl: "sample-data/roster.csv",

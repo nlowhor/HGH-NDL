@@ -3,9 +3,43 @@
 // are deduplicated so a staffer appearing in multiple feeds shows once.
 
 import { config } from "./config.js";
+import { parseCsv } from "./parsers/csv.js";
 import { fetchSheetRoster } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
 import { fetchWebsiteRoster } from "./sources/web.js";
+
+// Sort words so "James Nelson" and "Nelson James" both normalise the same way.
+function normalizeName(s) {
+  return String(s || '').toLowerCase().trim()
+    .replace(/[,_\-]+/g, ' ')
+    .split(/\s+/).filter(Boolean).sort().join(' ');
+}
+
+// Fetch a person-data tab published as CSV and return a Map:
+//   normalizeName(name) → { name, photo_url, title, notes }
+// Expected CSV columns: name, photo_url, title, notes (extras are ignored).
+async function fetchPersonSheet(url) {
+  if (!url) return new Map();
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return new Map();
+    const rows = parseCsv(await res.text());
+    const map = new Map();
+    for (const r of rows) {
+      const name = (r.name || '').trim();
+      if (!name) continue;
+      map.set(normalizeName(name), {
+        name,
+        photo_url: (r.photo_url || '').trim(),
+        title:     (r.title     || '').trim(),
+        notes:     (r.notes     || '').trim(),
+      });
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
 
 function dedupe(rows) {
   const seen = new Map();
@@ -72,6 +106,26 @@ export async function loadAllRosters({ demoMode = false } = {}) {
   }
 
   const rows = dedupe(buckets.flat());
+
+  // Merge per-person data (photo_url, title) from dedicated role tabs when URLs
+  // are configured. Person-tab values are authoritative: they override whatever
+  // the roster row already has, so editing a person in one place updates all shifts.
+  const personUrls = src.personSheetUrls || {};
+  if (Object.values(personUrls).some(Boolean)) {
+    const [studentMap, residentMap, attendingMap] = await Promise.all([
+      fetchPersonSheet(personUrls.student),
+      fetchPersonSheet(personUrls.resident),
+      fetchPersonSheet(personUrls.attending),
+    ]);
+    const maps = { student: studentMap, resident: residentMap, attending: attendingMap };
+    for (const r of rows) {
+      const person = maps[r.role]?.get(normalizeName(r.name));
+      if (!person) continue;
+      if (person.photo_url) r.photo_url = person.photo_url;
+      if (person.title)     r.title     = person.title;
+    }
+  }
+
   return { rows, diagnostics };
 }
 
