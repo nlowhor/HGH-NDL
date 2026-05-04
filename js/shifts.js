@@ -76,6 +76,23 @@ export function nextShiftAfter(instance) {
   return { name: nextDef.name, label: nextDef.label, date: nextDate };
 }
 
+// Returns the shift instance that immediately precedes the given one.
+export function prevShiftBefore(instance) {
+  const shifts = config.shifts;
+  const idx = shifts.findIndex((s) => s.name === instance.name);
+  if (idx === -1) return instance;
+  const prevIdx = (idx - 1 + shifts.length) % shifts.length;
+  const prevDef = shifts[prevIdx];
+
+  // If the previous shift wraps midnight (e.g. "night" 23–07), it started
+  // on the calendar day before instance.date. Otherwise same day.
+  const prevWraps = prevDef.end <= prevDef.start;
+  const [y, m, d] = instance.date.split("-").map(Number);
+  const localDate = new Date(y, m - 1, d);
+  const prevDate = prevWraps ? isoDate(addDays(localDate, -1)) : instance.date;
+  return { name: prevDef.name, label: prevDef.label, date: prevDate };
+}
+
 // Human-readable "Mon Apr 12 · Day (07:00–15:00)"
 export function describeShift(instance) {
   const def = config.shifts.find((s) => s.name === instance.name);

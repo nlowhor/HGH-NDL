@@ -146,6 +146,7 @@ const OFFSITE_KEYWORDS = ['san leandro', 'slh', 'alameda', 'cho'];
 
 function filterOffsite(rows) {
   return rows.filter(r => {
+    if (r.role !== 'attending') return true;
     const text = Object.values(r).filter(v => typeof v === 'string').join(' ').toLowerCase();
     return !OFFSITE_KEYWORDS.some(kw => text.includes(kw));
   });
