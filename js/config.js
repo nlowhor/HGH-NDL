@@ -60,7 +60,7 @@ export const config = {
     personSheetUrls: {
       student:   null,
       resident:  null,
-      attending: null,
+      attending: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQNmwF87H6dQZvru4z3JfUFFASk9a8xheUgwPxY5w_TGGiD-oVr2xWpnipqnRqSQ8zr8XBi0RTyR8UJ/pub?gid=1133961770&single=true&output=csv",
     },
 
     // Local fallback used when no remote sources return data.
