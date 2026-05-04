@@ -337,10 +337,12 @@ async function fetchStudentPhotos() {
       if (!name) continue;
 
       console.log(`  ${name} → ${photoUrl.slice(0, 80)}`);
-      byFullName.set(normalizeName(name), { name, url: photoUrl });
+      const entry = { name, url: photoUrl };
+      byFullName.set(normalizeName(name), entry);
       // Index every word so last-name-only schedule entries can match.
+      // Share the same object so URL updates in persistPhotosToPages propagate here too.
       for (const word of name.toLowerCase().split(/\s+/)) {
-        if (word.length > 2) byLastName.set(word, { name, url: photoUrl });
+        if (word.length > 2) byLastName.set(word, entry);
       }
     }
 
