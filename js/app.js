@@ -167,8 +167,8 @@ function personCardContent(row, partners = []) {
   } else if (row.role === "student") {
     const roleLabel = (row.title && /\bms[1-4]\b/i.test(row.title))
       ? row.title.trim().toUpperCase()
-      : "Medical Student";
-    levelLine = el("div", { class: "card__level card__level--student" }, roleLabel);
+      : "MS";
+    levelLine = el("div", { class: "card__level" }, roleLabel);
   }
 
   let pairLine = null;
@@ -200,9 +200,9 @@ function personCard(row, partners = []) {
 }
 
 // A single card spanning both student and resident columns, same height as a
-// solo card. Student on the left, resident on the right.
+// solo card. Student on the left (with "Paired with" label), resident on the right.
 function pairedCard(student, resident) {
-  const [stuPhoto, stuInfo] = personCardContent(student);
+  const [stuPhoto, stuInfo] = personCardContent(student, [resident]);
   const [resPhoto, resInfo] = personCardContent(resident);
   return el("div", { class: "card card--paired" }, [
     el("div", { class: "card__person" }, [stuPhoto, stuInfo]),
@@ -233,50 +233,48 @@ function renderPairsColumn(targetKey, students, residents, pairings) {
   if (!host) return;
   host.innerHTML = "";
 
-  // Build resident → student map for strict 1:1 pairings only.
-  // Rule 2 (either-or, 2 resident partners) stays solo with text label.
-  const residentToStudent = new Map();
-  const visuallyPaired = new Set();
+  // Identify strict 1:1 pairings (rule 2 "either-or" stays as text label).
+  const studentResident = new Map(); // student → single resident
+  const pairedResidents = new Set();
   for (const [student, partners] of pairings) {
     const resParts = partners.filter((p) => p.role === "resident");
     if (resParts.length === 1) {
-      residentToStudent.set(resParts[0], student);
-      visuallyPaired.add(student);
+      studentResident.set(student, resParts[0]);
+      pairedResidents.add(resParts[0]);
     }
   }
 
-  // One grid row per resident (in sort order).
-  residents.forEach((resident, i) => {
-    const gridRow = i + 1;
-    const student = residentToStudent.get(resident);
-    if (student) {
-      // Paired: single card spanning both columns, student left / resident right.
+  // Students occupy rows 1…n in the left column. Paired students share their
+  // row with the resident via a spanning card. Unpaired/either-or students get
+  // a solo card in col 1.
+  let row = 1;
+  for (const student of students) {
+    const resident = studentResident.get(student);
+    if (resident) {
       const card = pairedCard(student, resident);
-      card.style.gridRow = String(gridRow);
+      card.style.gridRow = String(row);
       host.appendChild(card);
     } else {
-      // Solo resident in the right sub-column.
-      host.appendChild(el("div", {
-        class: "pair-group--resident",
-        style: { gridColumn: "2", gridRow: String(gridRow) },
-      }, [personCard(resident)]));
-    }
-  });
-
-  // Unpaired students below resident rows (left sub-column).
-  let stuRow = residents.length + 1;
-  for (const student of students) {
-    if (!visuallyPaired.has(student)) {
       const partners = pairings.get(student) || [];
-      // "Either or" residents or attending partners → show as text label.
       const labelPartners = partners.filter(
         (p) => p.role === "attending" || p.role === "resident"
       );
       host.appendChild(el("div", {
         class: "pair-group--student",
-        style: { gridColumn: "1", gridRow: String(stuRow) },
+        style: { gridColumn: "1", gridRow: String(row) },
       }, [personCard(student, labelPartners)]));
-      stuRow++;
+    }
+    row++;
+  }
+
+  // Unpaired residents occupy the right column starting after all student rows.
+  for (const resident of residents) {
+    if (!pairedResidents.has(resident)) {
+      host.appendChild(el("div", {
+        class: "pair-group--resident",
+        style: { gridColumn: "2", gridRow: String(row) },
+      }, [personCard(resident)]));
+      row++;
     }
   }
 

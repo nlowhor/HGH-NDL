@@ -262,6 +262,8 @@ main {
   grid-column: 1 / -1;
   padding: 0;
   gap: 0;
+  border-color: rgba(78, 163, 255, 0.45);
+  background: color-mix(in srgb, var(--card) 94%, var(--accent) 6%);
 }
 
 .card__person {
@@ -341,10 +343,7 @@ main {
   color: var(--accent);
   margin-top: 2px;
 }
-.card__level--student {
-  color: var(--accent-2);
-  font-weight: 500;
-}
+/* .card__level--student intentionally inherits .card__level styles unchanged */
 .card__shift {
   color: var(--accent-2);
   font-size: 13px;
