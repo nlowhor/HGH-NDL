@@ -1,29 +1,21 @@
 'use strict';
 
 /**
- * HGH Student Schedule + Photo Sync
- * -----------------------------------
- * 1. Reads all rotation-block tabs of the student clerkship schedule Google
- *    Sheet (visual calendar layout) and extracts shift assignments for the
- *    configured date window.
- * 2. Fetches student headshot URLs from Airtable via the REST API.
- * 3. Persists each headshot to the GitHub repo (served via GitHub Pages) so
- *    the roster isn't broken by Airtable CDN expiry (~2 h). Existing files
- *    are reused; re-download only happens when FORCE_PHOTO_REFRESH=true.
- * 4. Replaces all student rows in the canonical roster Google Sheet.
+ * HGH Student Schedule Sync
+ * --------------------------
+ * Reads rotation-block tabs from the student clerkship schedule Google Sheet
+ * (visual calendar layout) and writes student shift rows to the roster tab
+ * of the canonical Google Sheet.
+ *
+ * Person data (display name, photo_url, title) lives in the "students" tab
+ * and is managed manually — this script never touches that tab.
  *
  * Required env vars:
  *   CANONICAL_SHEET_ID          – roster sheet to write to
- *   STUDENT_SCHEDULE_SHEET_ID   – clerkship schedule sheet to read from
  *   GOOGLE_SERVICE_ACCOUNT_JSON – service account credentials
- *   AIRTABLE_API_KEY            – Airtable personal access token
  */
 
 const { google } = require('googleapis');
-const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
-
-const AIRTABLE_BASE_ID = 'appXHrYewBeH8Rwmh';
-const AIRTABLE_API     = 'https://api.airtable.com/v0';
 
 // Published CSV of the student clerkship schedule Google Sheet.
 // Override with STUDENT_SCHEDULE_CSV_URL env var if the URL changes.
@@ -37,17 +29,6 @@ const DAYS_AHEAD   = 60;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function normalizeName(s) {
-  return String(s || '')
-    .replace(/\.[^.]+$/, '')
-    .replace(/[_,\-]+/g, ' ')
-    .toLowerCase()
-    .trim()
-    .split(/\s+/)
-    .sort()
-    .join(' ');
-}
-
 const SHIFT_LABEL_MAP = {
   'RN DAY':     { shift: 'day',     notes: 'RN Day' },
   'DAY-BUP':    { shift: 'day',     notes: 'Day-BUP' },
@@ -59,11 +40,19 @@ const SHIFT_LABEL_MAP = {
   'NIGHTS':     { shift: 'night',   notes: '' },
 };
 
-// Schedule uses DAY-res, DAY-att, SWING-res, SWING-att etc. — strip the
-// resident/attending suffix before looking up so these map correctly.
 function lookupShift(rawLabel) {
   const upper = rawLabel.toUpperCase();
-  return SHIFT_LABEL_MAP[upper] || SHIFT_LABEL_MAP[upper.replace(/-(RES|ATT)$/, '')];
+  if (SHIFT_LABEL_MAP[upper]) return SHIFT_LABEL_MAP[upper];
+  // Preserve -res/-att markers (e.g. DAY-RES → day shift, notes "-res").
+  const slotMatch = upper.match(/^(.*?)-(RES|ATT)$/);
+  if (slotMatch) {
+    const base = SHIFT_LABEL_MAP[slotMatch[1]];
+    if (base) {
+      const marker = `-${slotMatch[2].toLowerCase()}`;
+      return { shift: base.shift, notes: [base.notes, marker].filter(Boolean).join(' ') };
+    }
+  }
+  return null;
 }
 
 const SKIP_LABEL = /^(orientation|bridge|conference|lecture|holiday|off|em |bup$)/i;
@@ -94,7 +83,6 @@ function parseDate(val, hintYear) {
 function yearFromTabName(name) {
   const m4 = name.match(/\b(20\d{2})\b/);
   if (m4) return parseInt(m4[1], 10);
-  // Use the LAST "/YY" so "5/31/26" yields 26, not 31.
   const all = [...name.matchAll(/\/(\d{2})/g)];
   if (all.length) return 2000 + parseInt(all[all.length - 1][1], 10);
   return null;
@@ -132,13 +120,11 @@ function parseScheduleTab(rows, tabName) {
   const hintYear = yearFromTabName(tabName);
   const entries  = [];
 
-  // Find rotation year: prefer tab name hint, then scan for "Rotation Start Date" cell.
   let rotationYear = hintYear;
   if (!rotationYear) {
     for (const row of rows) {
       for (let c = 0; c < row.length; c++) {
         if (/rotation start date/i.test(String(row[c] || ''))) {
-          // Search remaining cells in this row for a parseable date.
           for (let k = c + 1; k < row.length; k++) {
             const raw = String(row[k] || '').trim();
             if (!raw) continue;
@@ -151,11 +137,11 @@ function parseScheduleTab(rows, tabName) {
       if (rotationYear) break;
     }
   }
+
   let i = 0;
   while (i < rows.length) {
     const row = rows[i] || [];
 
-    // Detect a "day header" row: ≥3 cells match known day abbreviations.
     const dayPositions = {};
     for (let c = 0; c < row.length; c++) {
       const v = String(row[c] || '').trim().toUpperCase();
@@ -163,7 +149,6 @@ function parseScheduleTab(rows, tabName) {
     }
     if (Object.keys(dayPositions).length < 3) { i++; continue; }
 
-    // Next row holds the dates.
     const dateRow = rows[i + 1] || [];
     const dateMap = {};
     for (const [day, col] of Object.entries(dayPositions)) {
@@ -171,26 +156,18 @@ function parseScheduleTab(rows, tabName) {
       if (d) dateMap[day] = d;
     }
 
-    // Determine (labelCol, nameCol) for each day.
-    // The schedule layout puts label+name in the two columns immediately
-    // following a "wide" day header (MON), but for subsequent days the day
-    // header sits at the NAME column and the label is one column to the left.
-    // Detect which rule applies by looking at the gap to the next day.
     const sortedDays = Object.entries(dayPositions).sort((a, b) => a[1] - b[1]);
-    const dayColMap = {}; // day → { labelCol, nameCol }
+    const dayColMap = {};
     for (let d = 0; d < sortedDays.length; d++) {
       const [day, col] = sortedDays[d];
       const nextCol = d + 1 < sortedDays.length ? sortedDays[d + 1][1] : null;
       if (nextCol !== null && nextCol - col >= 3) {
-        // Wide section (e.g. MON): label and name follow the header column.
         dayColMap[day] = { labelCol: col + 1, nameCol: col + 2 };
       } else {
-        // Narrow section (Tue–Sun): header column holds the label, next col is name.
         dayColMap[day] = { labelCol: col, nameCol: col + 1 };
       }
     }
 
-    // Consume data rows until the next week header (another row with ≥3 day names).
     let j = i + 2;
     while (j < rows.length) {
       const dataRow = rows[j] || [];
@@ -211,7 +188,7 @@ function parseScheduleTab(rows, tabName) {
         const mapped = lookupShift(rawLabel);
         if (!mapped) continue;
         entries.push({ date, shift: mapped.shift, role: STUDENT_ROLE,
-          name: rawName, title: '', notes: mapped.notes, photo_url: '' });
+          name: rawName, title: '', notes: mapped.notes });
       }
       j++;
     }
@@ -236,8 +213,8 @@ async function fetchStudentSchedule() {
   const fromIso = from.toISOString().slice(0, 10);
   const toIso   = to.toISOString().slice(0, 10);
 
-  const entries   = parseScheduleTab(rows, '');
-  const inWindow  = entries.filter(e => e.date >= fromIso && e.date <= toIso);
+  const entries  = parseScheduleTab(rows, '');
+  const inWindow = entries.filter(e => e.date >= fromIso && e.date <= toIso);
 
   const seen = new Set();
   const deduped = inWindow.filter(e => {
@@ -249,196 +226,7 @@ async function fetchStudentSchedule() {
   return deduped;
 }
 
-// ── Airtable REST API — fetch student photos ──────────────────────────────────
-
-async function fetchStudentPhotos() {
-  const apiKey = process.env.AIRTABLE_API_KEY;
-  if (!apiKey) {
-    console.warn('AIRTABLE_API_KEY not set — skipping photo fetch.');
-    return new Map();
-  }
-
-  const headers = { Authorization: `Bearer ${apiKey}` };
-
-  // Use AIRTABLE_TABLE env var if set (name or ID), otherwise auto-discover
-  // via metadata API (requires schema.bases:read scope on the token).
-  let tableId = process.env.AIRTABLE_TABLE;
-  let studentRosterTableId = null;
-  if (!tableId) {
-    console.log('AIRTABLE_TABLE not set — fetching metadata to discover table…');
-    console.log('(Add schema.bases:read scope to your token, or set AIRTABLE_TABLE secret to skip this.)');
-    const metaRes = await fetch(`${AIRTABLE_API}/meta/bases/${AIRTABLE_BASE_ID}/tables`, { headers });
-    if (!metaRes.ok) throw new Error(`Airtable metadata API ${metaRes.status}: ${await metaRes.text()}`);
-    const { tables } = await metaRes.json();
-    console.log(`Tables in base: ${tables.map(t => t.name).join(', ')}`);
-
-    const photoFieldNames = /photo|headshot|image|picture|portrait|pic\b/i;
-    const pdfFieldNames   = /^pdf$|^file$|^document$/i;
-
-    // Prefer a table with an attachment field that looks like headshots.
-    let table = tables.find(t =>
-      t.fields.some(f => f.type === 'multipleAttachments' && photoFieldNames.test(f.name))
-    );
-    // Fall back to a table with any attachment field that isn't named PDF/File/Document.
-    if (!table) {
-      table = tables.find(t =>
-        t.fields.some(f => f.type === 'multipleAttachments' && !pdfFieldNames.test(f.name))
-      );
-    }
-    if (!table) throw new Error(
-      `Could not auto-detect student photo table.\n` +
-      `Tables found: ${tables.map(t => t.name).join(', ')}\n` +
-      `Set AIRTABLE_TABLE secret to the exact table name or ID.`
-    );
-    tableId = table.id;
-    console.log(`Auto-discovered table: "${table.name}" (${tableId})`);
-    console.log(`Fields: ${table.fields.map(f => `${f.name} (${f.type})`).join(', ')}`);
-
-    // Also find the Student Roster table so we can join full names via linked records.
-    const rosterTable = tables.find(t => /^student.roster$/i.test(t.name));
-    if (rosterTable) {
-      studentRosterTableId = rosterTable.id;
-      console.log(`Found Student Roster table: "${rosterTable.name}" (${studentRosterTableId})`);
-    }
-  } else {
-    console.log(`Using table from AIRTABLE_TABLE env var: ${tableId}`);
-  }
-
-  // Fetch Student Roster records to build recordId → full name map.
-  // Welcome Form records link to Student Roster via the "Student" field.
-  const rosterById = new Map(); // Airtable record ID → full name string
-  if (studentRosterTableId) {
-    console.log('Fetching Student Roster for full name lookup…');
-    let rosterOffset;
-    let loggedRoster = false;
-    do {
-      const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${encodeURIComponent(studentRosterTableId)}`);
-      if (rosterOffset) url.searchParams.set('offset', rosterOffset);
-      const res = await fetch(url.toString(), { headers });
-      if (!res.ok) { console.warn('Student Roster fetch failed:', res.status); break; }
-      const data = await res.json();
-      for (const record of data.records || []) {
-        if (!loggedRoster) {
-          console.log('Student Roster first record fields:',
-            Object.entries(record.fields).slice(0, 12)
-              .map(([k, v]) => `"${k}": ${JSON.stringify(v).slice(0, 60)}`).join(', '));
-          loggedRoster = true;
-        }
-        const name = extractRosterName(record.fields);
-        if (name) rosterById.set(record.id, name);
-      }
-      rosterOffset = data.offset;
-    } while (rosterOffset);
-    console.log(`Student Roster: ${rosterById.size} name(s) loaded.`);
-  }
-
-  // Fetch all records, handling pagination.
-  // Returns { byFullName: Map, byLastName: Map } so callers can try both.
-  const byFullName = new Map(); // normalizeName(full name) → url
-  const byLastName = new Map(); // single lowercased word → url
-
-  let offset;
-  do {
-    const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableId)}`);
-    if (offset) url.searchParams.set('offset', offset);
-
-    const res = await fetch(url.toString(), { headers });
-    if (!res.ok) throw new Error(`Airtable records API ${res.status}: ${await res.text()}`);
-    const data = await res.json();
-
-    for (const record of data.records || []) {
-      const fields = record.fields;
-
-      // Log field names from the first record so we can see what Airtable exposes.
-      if (byFullName.size === 0 && byLastName.size === 0) {
-        console.log('Airtable field names in first record:',
-          Object.entries(fields).map(([k, v]) => `"${k}" (${Array.isArray(v) ? 'array' : typeof v})`).join(', '));
-        // Also log name-related field values to debug name extraction.
-        for (const [k, v] of Object.entries(fields)) {
-          if (/name/i.test(k)) {
-            console.log(`  name field "${k}":`, JSON.stringify(v).slice(0, 120));
-          }
-        }
-      }
-
-      // Extract photo URL from the first attachment field found.
-      const photoEntry = Object.entries(fields).find(([, v]) => Array.isArray(v) && v[0]?.url);
-      if (!photoEntry) continue;
-      const photoUrl = photoEntry[1][0].thumbnails?.large?.url || photoEntry[1][0].url;
-
-      // Extract name: prefer Student Roster lookup (full name via linked record),
-      // then fall back to Welcome Form field strategies.
-      const linkedStudentId = Array.isArray(fields['Student']) ? fields['Student'][0] : null;
-      const name = (linkedStudentId && rosterById.get(linkedStudentId)) || extractName(fields);
-      if (!name) continue;
-
-      console.log(`  ${name} → ${photoUrl.slice(0, 80)}`);
-      const entry = { name, url: photoUrl };
-      byFullName.set(normalizeName(name), entry);
-      // Index every word so last-name-only schedule entries can match.
-      // Share the same object so URL updates in persistPhotosToPages propagate here too.
-      for (const word of name.toLowerCase().split(/\s+/)) {
-        if (word.length > 2) byLastName.set(word, entry);
-      }
-    }
-
-    offset = data.offset;
-  } while (offset);
-
-  console.log(`Airtable: ${byFullName.size} photo(s) fetched.`);
-  return { byFullName, byLastName };
-}
-
-// Extract full name from a Student Roster record (primary field is usually the name).
-function extractRosterName(fields) {
-  // Try "Name", "Student Name", "Full Name" — common primary field names.
-  for (const [k, v] of Object.entries(fields)) {
-    if (/^(student\s+)?name$|^full\s+name$/i.test(k) && typeof v === 'string' && v.trim().length > 2) {
-      return v.trim();
-    }
-  }
-  // Fall back: first string field that looks like a name (has a space, no digits).
-  for (const [, v] of Object.values(fields).map((v, i) => [i, v])) {
-    if (typeof v === 'string' && /^[A-Za-z]+ [A-Za-z]/.test(v.trim())) return v.trim();
-  }
-  return null;
-}
-
-// Extract a clean student name from an Airtable record's fields object.
-function extractName(fields) {
-  // Strategy 1: "Preferred Name (optional)" when it has 2+ words (First Last).
-  // Students sometimes enter their full name here; prefer it over the lookup
-  // which often only contains the given name.
-  const preferred = fields['Preferred Name (optional)'];
-  if (typeof preferred === 'string') {
-    const words = preferred.trim().split(/\s+/).filter(Boolean);
-    if (words.length >= 2) return words.join(' ');
-  }
-
-  // Strategy 2: "Name (from Student)" lookup array — may be full name or just given name.
-  const fromStudent = fields['Name (from Student)'];
-  if (Array.isArray(fromStudent) && typeof fromStudent[0] === 'string' && fromStudent[0].trim()) {
-    return fromStudent[0].trim();
-  }
-
-  // Strategy 3: "Name" formula field — strip block label and phone number patterns.
-  // Format seen: "FirstName - Block X (dates)" or "Name (phone)"
-  const nameFormula = fields['Name'];
-  if (typeof nameFormula === 'string') {
-    const clean = nameFormula
-      .replace(/\s*-\s*Block.*$/i, '')              // strip " - Block ..." suffix
-      .replace(/\s*\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}.*$/, '') // strip phone
-      .trim();
-    if (clean.length > 1) return clean;
-  }
-
-  // Strategy 4: "Preferred Name" even if just one word (nickname).
-  if (typeof preferred === 'string' && preferred.trim().length > 1) return preferred.trim();
-
-  return null;
-}
-
-// ── Google Sheets — write canonical roster ────────────────────────────────────
+// ── Google Sheets write ───────────────────────────────────────────────────────
 
 async function getAuth() {
   const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
@@ -448,10 +236,7 @@ async function getAuth() {
   });
 }
 
-async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
-  const { byFullName, byLastName } = photos instanceof Map
-    ? { byFullName: photos, byLastName: new Map() }
-    : photos;
+async function writeStudentsToSheet(auth, spreadsheetId, entries) {
   const sheets = google.sheets({ version: 'v4', auth });
 
   const headerRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${ROSTER_TAB}!1:1` });
@@ -466,25 +251,21 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   const dateCol        = col('date');
   const shiftCol       = col('shift');
   const nameCol        = col('name');
-  const titleCol       = headers.indexOf('title');
-  const photoCol       = headers.indexOf('photo_url');
   const notesCol       = headers.indexOf('notes');
   const matchedNameCol = headers.indexOf('matched_name');
 
-  // Read entire sheet, strip student rows, append new ones, then rewrite.
-  // This avoids fragile row-index deletion (deleteDimension fails when row
-  // counts change between the read and the write).
-  const allRes   = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
-  const rows     = allRes.data.values || [];
-  const kept     = rows.slice(0, 1); // header row always kept
-  let  removed   = 0;
-  const savedMatched = {}; // normalised name → matched_name override
+  // Read entire sheet; preserve non-student rows and any saved matched_name values.
+  const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
+  const rows   = allRes.data.values || [];
+  const kept   = rows.slice(0, 1); // header always kept
+  let removed  = 0;
+  const savedMatched = {}; // schedule name (lower) → matched_name formula/value
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) {
       removed++;
       if (matchedNameCol >= 0) {
         const mn  = String(rows[i][matchedNameCol] || '').trim();
-        const key = normalizeName(String(rows[i][nameCol] || ''));
+        const key = String(rows[i][nameCol] || '').trim().toLowerCase();
         if (key && mn) savedMatched[key] = mn;
       }
       continue;
@@ -503,153 +284,27 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     return 0;
   }
 
-  let photoHits = 0;
   const width   = headers.length;
   const newRows = entries.map(e => {
-    const normalName = normalizeName(e.name);
-    const lastWord   = e.name.trim().split(/\s+/).pop().toLowerCase();
-    // Try full-name match first, then any-word match (handles first-name or last-name schedules).
-    const match = byFullName.get(normalName) || byLastName.get(lastWord);
-    const photo = match?.url || '';
-    if (photo) photoHits++;
-    // When we have an Airtable record, use that name — it's more complete/correct
-    // than whatever abbreviation the schedule used.
-    const rosterName = match ? match.name : e.name;
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = STUDENT_ROLE;
-    row[nameCol]  = rosterName;
-    if (titleCol >= 0)       row[titleCol]       = e.title || '';
-    if (photoCol >= 0)       row[photoCol]       = photo;
+    row[nameCol]  = e.name;
     if (notesCol >= 0)       row[notesCol]       = e.notes || '';
-    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[normalizeName(rosterName)] || '';
+    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[e.name.toLowerCase()] || '';
     return row;
   });
 
   const allNewRows = [...kept, ...newRows];
-  // Clear first so no stale rows survive below the new content.
   await sheets.spreadsheets.values.clear({ spreadsheetId, range: ROSTER_TAB });
   await sheets.spreadsheets.values.update({
     spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
     requestBody: { values: allNewRows },
   });
 
-  console.log(`Wrote ${newRows.length} student row(s) (${photoHits} with photo_url).`);
+  console.log(`Wrote ${newRows.length} student row(s).`);
   return newRows.length;
-}
-
-// ── Google Sheets — write students directory tab ──────────────────────────────
-
-const STUDENTS_TAB = 'students';
-
-async function writeStudentsTab(auth, spreadsheetId, photos) {
-  const { byFullName } = photos instanceof Map ? { byFullName: new Map() } : photos;
-  const sheets = google.sheets({ version: 'v4', auth });
-
-  // Ensure the tab exists (create it if missing).
-  const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const existing = meta.data.sheets.find(s => s.properties.title === STUDENTS_TAB);
-  if (!existing) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title: STUDENTS_TAB } } }] },
-    });
-    console.log(`Created "${STUDENTS_TAB}" tab.`);
-  }
-
-  // Read existing tab so we can preserve user-edited columns (title, notes) and
-  // any non-Airtable photo URLs the user may have set manually.
-  const existingByName = new Map(); // normalizeName → { title, notes, photo_url }
-  if (existing) {
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: STUDENTS_TAB });
-    const vals = res.data.values || [];
-    if (vals.length > 1) {
-      const hdrs = vals[0].map(h => String(h).toLowerCase().trim());
-      const ni = hdrs.indexOf('name'), pi = hdrs.indexOf('photo_url'),
-            ti = hdrs.indexOf('title'), xi = hdrs.indexOf('notes');
-      for (let i = 1; i < vals.length; i++) {
-        const r = vals[i];
-        const name = (r[ni] || '').trim();
-        if (!name) continue;
-        existingByName.set(normalizeName(name), {
-          photo_url: pi >= 0 ? (r[pi] || '').trim() : '',
-          title:     ti >= 0 ? (r[ti] || '').trim() : '',
-          notes:     xi >= 0 ? (r[xi] || '').trim() : '',
-        });
-      }
-    }
-  }
-
-  // Upsert: merge sync data with existing rows.
-  // Rule: use sync photo_url if existing is empty or an Airtable URL (expiring).
-  //       Preserve any non-Airtable URL the user set manually.
-  //       Never overwrite title or notes set by the user.
-  const merged = new Map(existingByName);
-  for (const [, entry] of byFullName) {
-    const key = normalizeName(entry.name);
-    const ex  = existingByName.get(key) || {};
-    const useNewPhoto = !ex.photo_url || /airtable\.com|airtableusercontent\.com/i.test(ex.photo_url);
-    merged.set(key, {
-      name:      entry.name,
-      photo_url: useNewPhoto ? (entry.url || ex.photo_url || '') : ex.photo_url,
-      title:     ex.title || '',
-      notes:     ex.notes || '',
-    });
-  }
-
-  // Preserve names from existing tab that the sync didn't touch (manually added).
-  for (const [key, ex] of existingByName) {
-    if (!merged.has(key)) merged.set(key, { name: ex.name || key, ...ex });
-  }
-
-  const entries = Array.from(merged.values())
-    .filter(e => e.name)
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  const rows = [
-    ['name', 'photo_url', 'title', 'notes'],
-    ...entries.map(e => [e.name, e.photo_url, e.title, e.notes]),
-  ];
-
-  await sheets.spreadsheets.values.clear({ spreadsheetId, range: STUDENTS_TAB });
-  await sheets.spreadsheets.values.update({
-    spreadsheetId, range: `${STUDENTS_TAB}!A1`, valueInputOption: 'RAW',
-    requestBody: { values: rows },
-  });
-
-  console.log(`"${STUDENTS_TAB}" tab: wrote ${entries.length} student record(s).`);
-}
-
-// ── GitHub Pages photo persistence ───────────────────────────────────────────
-
-// Iterates byFullName, uploads any Airtable URLs to the GitHub repo for
-// permanent serving, and updates both maps to use the stable Pages URL.
-async function persistPhotosToPages(photos) {
-  if (!process.env.GITHUB_TOKEN) {
-    console.warn('GITHUB_TOKEN not set — skipping GitHub Pages photo persistence.');
-    return photos;
-  }
-
-  const { byFullName, byLastName } = photos;
-  let persisted = 0;
-  let skipped   = 0;
-
-  for (const [normalKey, entry] of byFullName) {
-    if (!isAirtableUrl(entry.url)) { skipped++; continue; }
-    const fileKey = normalKey.replace(/ /g, '-');
-    try {
-      const pageUrl = await ensurePhotoInPages(fileKey, entry.url, 'photos/students');
-      entry.url = pageUrl;
-      persisted++;
-    } catch (err) {
-      console.warn(`  Photo persistence failed for ${entry.name}:`, err.message);
-    }
-  }
-
-  // Rebuild byLastName so it reflects any updated URLs (entries are shared objects).
-  console.log(`Photos persisted to GitHub Pages: ${persisted} (${skipped} already permanent).`);
-  return { byFullName, byLastName };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -658,28 +313,10 @@ async function main() {
   if (!process.env.CANONICAL_SHEET_ID)          throw new Error('CANONICAL_SHEET_ID env var is required.');
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
-  const auth = await getAuth();
-
-  const emptyPhotos = { byFullName: new Map(), byLastName: new Map() };
-  const [entries, rawPhotos] = await Promise.all([
-    fetchStudentSchedule(),
-    fetchStudentPhotos().catch(err => {
-      console.warn('Photo fetch failed (continuing without photos):', err.message);
-      return emptyPhotos;
-    }),
-  ]);
-
-  console.log(`\nSchedule entries: ${entries.length}, photos: ${rawPhotos.byFullName.size}`);
-  const photos = await persistPhotosToPages(rawPhotos).catch(err => {
-    console.warn('GitHub Pages photo persistence failed (falling back to Airtable URLs):', err.message);
-    return rawPhotos;
-  });
-
-  await Promise.all([
-    writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries, photos),
-    writeStudentsTab(auth, process.env.CANONICAL_SHEET_ID, photos),
-  ]);
-  console.log(`\nDone.`);
+  const auth    = await getAuth();
+  const entries = await fetchStudentSchedule();
+  const n       = await writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries);
+  console.log(`\nDone. ${n} student shift rows written to roster.`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

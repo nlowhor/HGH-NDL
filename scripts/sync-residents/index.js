@@ -1,7 +1,5 @@
 'use strict';
 
-const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
-
 /**
  * HGH Resident Schedule Sync
  * ---------------------------
@@ -9,9 +7,9 @@ const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
  *   - getstaffs: all staff with IDs, names, and PGY levels
  *   - getschedule: all shifts with dates, times, names, and assigned staff IDs
  *
- * Maps the results and writes resident shift rows to the canonical Google Sheet.
- * Also looks up resident headshots from the Google Drive folder that contains
- * the sheet (or from DRIVE_FOLDER_ID if set) and populates photo_url.
+ * Writes resident shift rows to the roster tab of the canonical Google Sheet.
+ * Person data (photo_url, display name, title) lives in the "residents" tab
+ * and is managed manually — this script never touches that tab.
  *
  * Runs in GitHub Actions on a daily schedule. Can also be run locally:
  *   CANONICAL_SHEET_ID=... GOOGLE_SERVICE_ACCOUNT_JSON='...' node index.js
@@ -24,11 +22,10 @@ const MEDREZ_GROUP = '9s733y77k';
 const MEDREZ_URL   = `https://www.medrez.net/view.php?a=${MEDREZ_GROUP}`;
 const MEDREZ_PASS  = 'HGH5150';
 
-const ROSTER_TAB     = 'roster';
-const RESIDENTS_TAB  = 'residents';
-const RESIDENT_ROLE  = 'resident';
-const DAYS_BEHIND    = 1;   // include yesterday so nothing is missed
-const DAYS_AHEAD     = 60;  // fetch two months ahead
+const ROSTER_TAB    = 'roster';
+const RESIDENT_ROLE = 'resident';
+const DAYS_BEHIND   = 1;   // include yesterday so nothing is missed
+const DAYS_AHEAD    = 60;  // fetch two months ahead
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -52,22 +49,8 @@ function detectShift(startHour) {
 }
 
 function pgyLabel(pgyStr) {
-  // "pgy1" → "R1", "pgy2" → "R2", etc.
   const m = String(pgyStr).match(/(\d+)/);
   return m ? `R${m[1]}` : '';
-}
-
-// Normalise a name for fuzzy matching: strip extension, replace separators,
-// lowercase, sort words so "Smith, John" matches "John Smith".
-function normalizeName(s) {
-  return s
-    .replace(/\.[^.]+$/, '')          // remove file extension
-    .replace(/[_,\-]+/g, ' ')         // separators → spaces
-    .toLowerCase()
-    .trim()
-    .split(/\s+/)
-    .sort()
-    .join(' ');
 }
 
 // ── Medrez API calls ──────────────────────────────────────────────────────────
@@ -99,7 +82,6 @@ async function fetchMedrezData() {
     if (!loggedIn) throw new Error('Login does not appear to have succeeded.');
     console.log('Logged in.');
 
-    // ── getstaffs API ──────────────────────────────────────────────────────
     const staffsUrl = `https://www.medrez.net/view.php?reqdata=getstaffs&a=${MEDREZ_GROUP}&async=yes&need=account`;
     console.log('Fetching staff list…');
     const staffsData = await page.evaluate(async (url) => {
@@ -108,7 +90,6 @@ async function fetchMedrezData() {
       return res.json();
     }, staffsUrl);
 
-    // ── getschedule API ────────────────────────────────────────────────────
     const today = new Date();
     const from  = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
     const to    = new Date(today); to.setDate(to.getDate() + DAYS_AHEAD);
@@ -151,12 +132,11 @@ function buildEntries(staffsData, schedData) {
         if (!staff) continue;
         entries.push({
           date,
-          shift:     detectShift(startHour),
-          role:      RESIDENT_ROLE,
-          name:      staff.name,
-          title:     staff.title,
-          photo_url: '',
-          notes:     shiftName,
+          shift: detectShift(startHour),
+          role:  RESIDENT_ROLE,
+          name:  staff.name,
+          title: staff.title,
+          notes: shiftName,
         });
       }
     }
@@ -167,121 +147,17 @@ function buildEntries(staffsData, schedData) {
   return entries;
 }
 
-// ── Google Drive photo lookup ─────────────────────────────────────────────────
-
-async function getDriveFolderId(drive, spreadsheetId) {
-  if (process.env.DRIVE_FOLDER_ID) {
-    console.log(`Using DRIVE_FOLDER_ID: ${process.env.DRIVE_FOLDER_ID}`);
-    return process.env.DRIVE_FOLDER_ID;
-  }
-  console.log('Looking up parent folder of the sheet…');
-  const meta = await drive.files.get({ fileId: spreadsheetId, fields: 'parents' });
-  const parents = meta.data.parents || [];
-  if (!parents.length) throw new Error('Sheet has no parent Drive folder.');
-  console.log(`Parent folder ID: ${parents[0]}`);
-  return parents[0];
-}
-
-// Returns { photos, folderId } — photos maps normalised name → Drive thumbnail URL.
-async function fetchDrivePhotos(auth, spreadsheetId) {
-  const drive    = google.drive({ version: 'v3', auth });
-  let   folderId;
-  try {
-    folderId = await getDriveFolderId(drive, spreadsheetId);
-  } catch (err) {
-    console.warn('Could not find Drive folder — skipping Drive photo lookup:', err.message);
-    return { photos: {}, folderId: null };
-  }
-
-  // List image files in the folder.
-  const imageTypes = [
-    'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic',
-  ];
-  const mimeQuery = imageTypes.map(t => `mimeType='${t}'`).join(' or ');
-  const query = `'${folderId}' in parents and (${mimeQuery}) and trashed=false`;
-
-  const files = [];
-  let pageToken;
-  do {
-    const res = await drive.files.list({
-      q: query,
-      fields: 'nextPageToken, files(id, name)',
-      pageSize: 200,
-      ...(pageToken ? { pageToken } : {}),
-    });
-    files.push(...(res.data.files || []));
-    pageToken = res.data.nextPageToken;
-  } while (pageToken);
-
-  console.log(`Found ${files.length} image file(s) in Drive folder.`);
-
-  // Build normalised-name → thumbnail URL map.
-  const photoMap = {};
-  for (const f of files) {
-    const key = normalizeName(f.name);
-    photoMap[key] = `https://drive.google.com/thumbnail?id=${f.id}&sz=w400`;
-  }
-  return { photos: photoMap, folderId };
-}
-
-// ── Airtable resident photo lookup ───────────────────────────────────────────
-
-// Fetches the "Resident Roster" table from the ReST Airtable base and returns
-// a map of normalised name → attachment URL. Attachment URLs expire (~2 hours)
-// so this must run at sync time and the URL written directly to the sheet.
-async function fetchAirtableResidentPhotos() {
-  const apiKey = process.env.AIRTABLE_API_KEY;
-  const baseId = process.env.AIRTABLE_RESIDENTS_BASE_ID || 'appKUhwYWruLxO7p2';
-  if (!apiKey) {
-    console.warn('AIRTABLE_API_KEY not set — skipping Airtable photo lookup.');
-    return {};
-  }
-
-  const table = encodeURIComponent('Resident Roster');
-  const fieldParams = ['Full Name', 'Photo']
-    .map(f => `fields[]=${encodeURIComponent(f)}`).join('&');
-
-  const photos = {};
-  let offset;
-  do {
-    const url = `https://api.airtable.com/v0/${baseId}/${table}?${fieldParams}` +
-                (offset ? `&offset=${offset}` : '');
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!res.ok) throw new Error(`Airtable resident fetch failed: HTTP ${res.status}`);
-    const data = await res.json();
-    for (const record of (data.records || [])) {
-      const name        = record.fields['Full Name'];
-      const attachments = record.fields['Photo'];
-      if (!name || !Array.isArray(attachments) || !attachments.length) continue;
-      const photoUrl = attachments[0].url;
-      if (photoUrl) photos[normalizeName(name)] = photoUrl;
-    }
-    offset = data.offset;
-  } while (offset);
-
-  console.log(`Airtable resident photos: ${Object.keys(photos).length} record(s) indexed.`);
-  return photos;
-}
-
-// ── Google API clients ────────────────────────────────────────────────────────
+// ── Google Sheets write ───────────────────────────────────────────────────────
 
 async function getAuth() {
   const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
   return new google.auth.GoogleAuth({
     credentials: key,
-    scopes: [
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive.readonly',
-    ],
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 }
 
-// ── Google Sheets write ───────────────────────────────────────────────────────
-
-async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos = {}) {
-  // Read header row.
+async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
   const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `${ROSTER_TAB}!1:1`,
@@ -294,42 +170,34 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
     if (i < 0) throw new Error(`roster tab missing column: "${name}"`);
     return i;
   };
-  const roleCol         = col('role');
-  const dateCol         = col('date');
-  const shiftCol        = col('shift');
-  const nameCol         = col('name');
-  const titleCol        = headers.indexOf('title');
-  const photoCol        = headers.indexOf('photo_url');
-  const notesCol        = headers.indexOf('notes');
-  const matchedNameCol  = headers.indexOf('matched_name');
+  const roleCol        = col('role');
+  const dateCol        = col('date');
+  const shiftCol       = col('shift');
+  const nameCol        = col('name');
+  const titleCol       = headers.indexOf('title');
+  const notesCol       = headers.indexOf('notes');
+  const matchedNameCol = headers.indexOf('matched_name');
 
-  // Read all rows; preserve any photo_url and matched_name already in the sheet.
+  // Read all rows; preserve matched_name overrides already in the sheet.
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows   = allRes.data.values || [];
 
-  const toDelete       = [];
-  const savedPhotos    = {}; // normalised name → photo_url
-  const savedMatched   = {}; // normalised name → matched_name override
+  const toDelete     = [];
+  const savedMatched = {}; // normalised schedule name → matched_name formula/value
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === RESIDENT_ROLE) {
       toDelete.push(i + 1);
-      const key = normalizeName(String(rows[i][nameCol] || ''));
-      if (photoCol >= 0) {
-        const photo = String(rows[i][photoCol] || '').trim();
-        if (key && photo) savedPhotos[key] = photo;
-      }
       if (matchedNameCol >= 0) {
-        const mn = String(rows[i][matchedNameCol] || '').trim();
+        const mn  = String(rows[i][matchedNameCol] || '').trim();
+        const key = String(rows[i][nameCol] || '').trim().toLowerCase();
         if (key && mn) savedMatched[key] = mn;
       }
     }
   }
-  console.log(`Preserved photo_url for ${Object.keys(savedPhotos).length} resident(s) already in sheet.`);
 
-  // Delete existing resident rows bottom-up.
   if (toDelete.length) {
     console.log(`Deleting ${toDelete.length} existing resident rows…`);
-    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const meta    = await sheets.spreadsheets.get({ spreadsheetId });
     const sheetId = meta.data.sheets
       .find(s => s.properties.title === ROSTER_TAB).properties.sheetId;
     await sheets.spreadsheets.batchUpdate({
@@ -346,26 +214,16 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
 
   if (!entries.length) { console.log('No entries to append.'); return 0; }
 
-  // Photo priority: Airtable > Drive folder > previously saved in sheet.
-  const resolvePhoto = (name) => {
-    const key = normalizeName(name);
-    return airtablePhotos[key] || drivePhotos[key] || savedPhotos[key] || '';
-  };
-
-  let photoHits = 0;
   const width   = headers.length;
   const newRows = entries.map(e => {
-    const row   = new Array(width).fill('');
-    const photo = resolvePhoto(e.name);
-    if (photo) photoHits++;
+    const row = new Array(width).fill('');
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = RESIDENT_ROLE;
     row[nameCol]  = e.name;
     if (titleCol >= 0)       row[titleCol]       = e.title || '';
-    if (photoCol >= 0)       row[photoCol]       = photo;
     if (notesCol >= 0)       row[notesCol]       = e.notes || '';
-    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[normalizeName(e.name)] || '';
+    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[e.name.toLowerCase()] || '';
     return row;
   });
 
@@ -376,117 +234,8 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos
     requestBody: { values: newRows },
   });
 
-  console.log(`Appended ${newRows.length} resident shift rows (${photoHits} with photo_url).`);
+  console.log(`Appended ${newRows.length} resident shift rows.`);
   return newRows.length;
-}
-
-// ── GitHub Pages photo persistence ───────────────────────────────────────────
-
-// Takes the airtablePhotos map (normalizedName → url) and returns a new map
-// where Airtable URLs have been replaced with permanent GitHub Pages URLs.
-async function persistResidentPhotos(airtablePhotos) {
-  if (!process.env.GITHUB_TOKEN) {
-    console.warn('GITHUB_TOKEN not set — skipping GitHub Pages photo persistence.');
-    return airtablePhotos;
-  }
-
-  const persisted = {};
-  let hits    = 0;
-  let skipped = 0;
-
-  for (const [key, url] of Object.entries(airtablePhotos)) {
-    if (!isAirtableUrl(url)) { persisted[key] = url; skipped++; continue; }
-    const fileKey = key.replace(/ /g, '-');
-    try {
-      persisted[key] = await ensurePhotoInPages(fileKey, url, 'photos/residents');
-      hits++;
-    } catch (err) {
-      console.warn(`  Photo persistence failed for key "${key}":`, err.message);
-      persisted[key] = url; // fall back to expiring URL
-    }
-  }
-
-  console.log(`Resident photos persisted to GitHub Pages: ${hits} (${skipped} already permanent).`);
-  return persisted;
-}
-
-// ── Google Sheets — write residents directory tab ─────────────────────────────
-
-// Upserts resident person data (name, photo_url, title, notes) into the
-// "residents" tab. Preserves any user-edited title/notes and any non-Airtable
-// photo URL the user may have set manually; sync only fills empty fields or
-// replaces expiring Airtable URLs with permanent ones.
-async function writeResidentsTab(sheets, spreadsheetId, entries, resolvedPhotos) {
-  // Ensure the tab exists.
-  const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const existing = meta.data.sheets.find(s => s.properties.title === RESIDENTS_TAB);
-  if (!existing) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title: RESIDENTS_TAB } } }] },
-    });
-    console.log(`Created "${RESIDENTS_TAB}" tab.`);
-  }
-
-  // Read existing tab to preserve user edits.
-  const existingByName = new Map();
-  if (existing) {
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: RESIDENTS_TAB });
-    const vals = res.data.values || [];
-    if (vals.length > 1) {
-      const hdrs = vals[0].map(h => String(h).toLowerCase().trim());
-      const ni = hdrs.indexOf('name'), pi = hdrs.indexOf('photo_url'),
-            ti = hdrs.indexOf('title'), xi = hdrs.indexOf('notes');
-      for (let i = 1; i < vals.length; i++) {
-        const r = vals[i];
-        const name = (r[ni] || '').trim();
-        if (!name) continue;
-        existingByName.set(normalizeName(name), {
-          name,
-          photo_url: pi >= 0 ? (r[pi] || '').trim() : '',
-          title:     ti >= 0 ? (r[ti] || '').trim() : '',
-          notes:     xi >= 0 ? (r[xi] || '').trim() : '',
-        });
-      }
-    }
-  }
-
-  // Build a deduplicated person list from schedule entries.
-  const personMap = new Map();
-  for (const e of entries) {
-    const key = normalizeName(e.name);
-    if (!personMap.has(key)) {
-      const ex = existingByName.get(key) || {};
-      const syncPhoto = resolvedPhotos[key] || '';
-      const useNewPhoto = !ex.photo_url || /airtable\.com|airtableusercontent\.com/i.test(ex.photo_url);
-      personMap.set(key, {
-        name:      e.name,
-        photo_url: useNewPhoto ? (syncPhoto || ex.photo_url || '') : ex.photo_url,
-        title:     ex.title || e.title || '',
-        notes:     ex.notes || '',
-      });
-    }
-  }
-
-  // Preserve manually added entries not in the current schedule window.
-  for (const [key, ex] of existingByName) {
-    if (!personMap.has(key)) personMap.set(key, ex);
-  }
-
-  const rows = [
-    ['name', 'photo_url', 'title', 'notes'],
-    ...Array.from(personMap.values())
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map(e => [e.name, e.photo_url, e.title, e.notes]),
-  ];
-
-  await sheets.spreadsheets.values.clear({ spreadsheetId, range: RESIDENTS_TAB });
-  await sheets.spreadsheets.values.update({
-    spreadsheetId, range: `${RESIDENTS_TAB}!A1`, valueInputOption: 'RAW',
-    requestBody: { values: rows },
-  });
-
-  console.log(`"${RESIDENTS_TAB}" tab: wrote ${rows.length - 1} resident record(s).`);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -508,35 +257,8 @@ async function main() {
 
   const auth   = await getAuth();
   const sheets = google.sheets({ version: 'v4', auth });
-
-  let drivePhotos = {};
-  try {
-    const result = await fetchDrivePhotos(auth, spreadsheetId);
-    drivePhotos  = result.photos;
-    console.log(`Drive photo lookup: ${Object.keys(drivePhotos).length} image(s) indexed.`);
-  } catch (err) {
-    console.warn('Drive photo lookup failed (photos will fall back to saved values):', err.message);
-  }
-
-  let airtablePhotos = {};
-  try {
-    const raw = await fetchAirtableResidentPhotos();
-    airtablePhotos = await persistResidentPhotos(raw).catch(err => {
-      console.warn('GitHub Pages photo persistence failed (falling back to Airtable URLs):', err.message);
-      return raw;
-    });
-  } catch (err) {
-    console.warn('Airtable resident photo lookup failed:', err.message);
-  }
-
-  // Merged photo map for the person tab (Airtable > Drive).
-  const resolvedPhotos = { ...drivePhotos, ...airtablePhotos };
-
-  const [n] = await Promise.all([
-    writeResidentsToSheet(sheets, spreadsheetId, entries, drivePhotos, airtablePhotos),
-    writeResidentsTab(sheets, spreadsheetId, entries, resolvedPhotos),
-  ]);
-  console.log(`\nDone. ${n} resident shift rows written to sheet.`);
+  const n      = await writeResidentsToSheet(sheets, spreadsheetId, entries);
+  console.log(`\nDone. ${n} resident shift rows written to roster.`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

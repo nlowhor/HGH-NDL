@@ -1,16 +1,12 @@
-name: Sync Student Schedule and Photos
+name: Sync Student Schedule
 
 on:
   schedule:
-    # Daily sync at 6 AM Pacific (14:00 UTC).
-    - cron: '0 14 * * *'
-    # Weekly photo refresh every Sunday at 6 AM Pacific — FORCE_PHOTO_REFRESH
-    # is set based on which schedule triggered the run (see step env below).
-    - cron: '0 14 * * 0'
-  workflow_dispatch:
+    - cron: '0 14 * * *'  # Daily at 6 AM Pacific (14:00 UTC)
+  workflow_dispatch:        # Allow manual trigger from Actions tab
 
 permissions:
-  contents: write  # Required to commit headshots to the repo via GitHub API.
+  contents: read
 
 jobs:
   sync:
@@ -35,17 +31,6 @@ jobs:
       - name: Run student sync
         working-directory: scripts/sync-students
         env:
-          CANONICAL_SHEET_ID:           ${{ secrets.CANONICAL_SHEET_ID }}
-          STUDENT_SCHEDULE_SHEET_ID:    ${{ secrets.STUDENT_SCHEDULE_SHEET_ID }}
-          GOOGLE_SERVICE_ACCOUNT_JSON:  ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          AIRTABLE_API_KEY:             ${{ secrets.AIRTABLE_API_KEY }}
-          # Optional: set to table name or ID to skip metadata API discovery.
-          # Required if your token lacks the schema.bases:read scope.
-          AIRTABLE_TABLE:               ${{ secrets.AIRTABLE_TABLE }}
-          # GitHub API credentials for committing headshots to GitHub Pages.
-          GITHUB_TOKEN:                 ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY:            ${{ github.repository }}
-          GITHUB_REF_NAME:              ${{ github.ref_name }}
-          # Force re-download of all photos on the Sunday run.
-          FORCE_PHOTO_REFRESH:          ${{ github.event.schedule == '0 14 * * 0' && 'true' || '' }}
+          CANONICAL_SHEET_ID:          ${{ secrets.CANONICAL_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: node index.js
