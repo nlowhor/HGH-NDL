@@ -4,27 +4,28 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>HGH Emergency Department</title>
-  <link rel="stylesheet" href="styles.css?v=20" />
+  <link rel="stylesheet" href="styles.css?v=21" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar__left">
-      <h1>HGH Emergency Department</h1>
-      <div id="clock" class="clock" aria-live="polite"></div>
-    </div>
-    <nav class="shift-nav" aria-label="Shift navigation">
-      <button id="prev-shift-btn" class="shift-nav__btn">&#8592; Previous Shift</button>
-      <button id="now-btn" class="shift-nav__btn shift-nav__btn--now">Now</button>
-      <input type="datetime-local" id="when" class="shift-nav__when" />
-      <button id="next-shift-btn" class="shift-nav__btn">Next Shift &#8594;</button>
-    </nav>
-  </header>
-
   <main>
     <section id="shift-section" class="shift-section">
       <div class="shift-section__head">
-        <div id="shift-relative" class="shift-section__label"></div>
-        <div id="shift-meta" class="shift-section__meta"></div>
+        <div class="shift-section__title-row">
+          <div class="shift-section__title-left">
+            <h1>HGH Emergency Department</h1>
+            <div id="clock" class="clock" aria-live="polite"></div>
+          </div>
+          <nav class="shift-nav" aria-label="Shift navigation">
+            <button id="prev-shift-btn" class="shift-nav__btn">&#8592; Previous Shift</button>
+            <button id="now-btn" class="shift-nav__btn shift-nav__btn--now">Now</button>
+            <input type="datetime-local" id="when" class="shift-nav__when" />
+            <button id="next-shift-btn" class="shift-nav__btn">Next Shift &#8594;</button>
+          </nav>
+        </div>
+        <div class="shift-section__meta-row">
+          <div id="shift-relative" class="shift-section__label"></div>
+          <div id="shift-meta" class="shift-section__meta"></div>
+        </div>
       </div>
       <div class="roles">
         <h3 class="role-header">Students</h3>
@@ -35,7 +36,6 @@
         <div class="cards" data-target="shift.attending"></div>
       </div>
     </section>
-
   </main>
 
   <script type="module" src="js/app.js?v=20"></script>
