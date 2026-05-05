@@ -54,6 +54,9 @@ html, body {
   background: var(--accent);
   color: var(--bg);
 }
+/* "Current" button is styled the same as the old "Now" button */
+#current-btn { color: var(--accent); border-color: var(--accent); }
+#current-btn.is-live { background: var(--accent); color: var(--bg); }
 
 .shift-nav__when {
   background: var(--panel-2);
@@ -118,7 +121,16 @@ main {
   letter-spacing: 1px;
   color: var(--muted);
 }
-.shift-section__label.is-current { color: var(--accent); }
+
+/* Color the entire header info area based on which shift is being viewed */
+#shift-section[data-mode="current"] .shift-section__meta,
+#shift-section[data-mode="current"] .shift-section__label { color: var(--accent); }
+
+#shift-section[data-mode="upnext"] .shift-section__meta,
+#shift-section[data-mode="upnext"] .shift-section__label { color: var(--accent-2); }
+
+#shift-section[data-mode="other"] .shift-section__meta,
+#shift-section[data-mode="other"] .shift-section__label { color: var(--muted); }
 
 .shift-section__meta {
   font-size: 18px;

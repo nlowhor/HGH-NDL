@@ -259,14 +259,17 @@ function reorderForAlignment(students, pool, pairings) {
 // ---------- Shift relative label ----------
 
 function shiftRelativeLabel(viewed, nowShift) {
-  if (viewed.date === nowShift.date && viewed.name === nowShift.name) return { text: "Current Shift", current: true };
+  if (viewed.date === nowShift.date && viewed.name === nowShift.name)
+    return { text: "Current Shift", mode: "current" };
   const next = nextShiftAfter(nowShift);
-  if (viewed.date === next.date && viewed.name === next.name) return { text: "Next Shift", current: false };
+  if (viewed.date === next.date && viewed.name === next.name)
+    return { text: "Up Next", mode: "upnext" };
   const prev = prevShiftBefore(nowShift);
-  if (viewed.date === prev.date && viewed.name === prev.name) return { text: "Previous Shift", current: false };
+  if (viewed.date === prev.date && viewed.name === prev.name)
+    return { text: "Previous Shift", mode: "other" };
   const viewStart = shiftStartDate(viewed.date, config.shifts.find(s => s.name === viewed.name));
   const nowStart  = shiftStartDate(nowShift.date, config.shifts.find(s => s.name === nowShift.name));
-  return { text: viewStart > nowStart ? "Future Shift" : "Past Shift", current: false };
+  return { text: viewStart > nowStart ? "Future Shift" : "Past Shift", mode: "other" };
 }
 
 // Off-site and backup filtering is applied in data.js at load time.
@@ -287,7 +290,7 @@ function currentWhen() {
 
 function renderClock() {
   const live = state.selectedWhen == null;
-  document.getElementById("now-btn").classList.toggle("is-live", live);
+  document.getElementById("current-btn").classList.toggle("is-live", live);
 }
 
 function render() {
@@ -299,8 +302,8 @@ function render() {
   const rel = shiftRelativeLabel(viewed, nowShift);
   const labelEl = document.getElementById("shift-relative");
   labelEl.textContent = rel.text;
-  labelEl.className = "shift-section__label" + (rel.current ? " is-current" : "");
   document.getElementById("shift-meta").textContent = describeShift(viewed);
+  document.getElementById("shift-section").dataset.mode = rel.mode;
 
   const groups = groupByRole(filterOffsite(rosterForShift(state.rows, viewed)));
   const pairings = computeStudentPairings(
@@ -372,7 +375,6 @@ function navigateShift(direction) {
 
 function wire() {
   const input = document.getElementById("when");
-  const nowBtn = document.getElementById("now-btn");
 
   input.value = toLocalInputValue(new Date());
   input.addEventListener("change", () => {
@@ -381,9 +383,17 @@ function wire() {
     render();
   });
 
-  nowBtn.addEventListener("click", () => {
+  document.getElementById("current-btn").addEventListener("click", () => {
     state.selectedWhen = null;
     input.value = toLocalInputValue(new Date());
+    render();
+  });
+
+  document.getElementById("upnext-btn").addEventListener("click", () => {
+    const next = nextShiftAfter(shiftAt(new Date()));
+    const shiftDef = config.shifts.find(s => s.name === next.name);
+    state.selectedWhen = shiftStartDate(next.date, shiftDef);
+    input.value = toLocalInputValue(state.selectedWhen);
     render();
   });
 
