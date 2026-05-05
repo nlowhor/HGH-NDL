@@ -219,18 +219,52 @@ function personCard(row, partners = [], pairColor = null) {
 }
 
 // pairInfoMap: Map<row, { partners: row[], color: string|null }>
+// rows may contain null entries, which render as invisible spacers to preserve row alignment.
 function renderColumn(targetKey, rows, pairInfoMap = new Map()) {
   const host = document.querySelector(`[data-target="${targetKey}"]`);
   if (!host) return;
   host.innerHTML = "";
-  if (!rows.length) {
+  const realRows = rows.filter(Boolean);
+  if (!realRows.length) {
     host.appendChild(el("div", { class: "empty" }, "No one listed."));
     return;
   }
   for (const r of rows) {
-    const info = pairInfoMap.get(r) || {};
-    host.appendChild(personCard(r, info.partners || [], info.color || null));
+    if (r == null) {
+      host.appendChild(el("div", { class: "card card--spacer" }));
+    } else {
+      const info = pairInfoMap.get(r) || {};
+      host.appendChild(personCard(r, info.partners || [], info.color || null));
+    }
   }
+}
+
+// Reorder `pool` (residents or attendings) so that, for each student at index i,
+// their paired partner (if any in pool) appears at index i.
+// Unpaired pool members fill remaining slots in their original order.
+// Returns an array that may contain null entries (spacers) where no pool member exists.
+function reorderForAlignment(students, pool, pairings) {
+  const poolSet = new Set(pool);
+  const result  = new Array(Math.max(students.length, pool.length)).fill(null);
+  const used    = new Set();
+
+  for (let i = 0; i < students.length; i++) {
+    const partners = pairings.get(students[i]) || [];
+    const match = partners.find(p => poolSet.has(p) && !used.has(p));
+    if (match) { result[i] = match; used.add(match); }
+  }
+
+  const unpaired = pool.filter(r => !used.has(r));
+  let ui = 0;
+  for (let i = 0; i < result.length && ui < unpaired.length; i++) {
+    if (result[i] === null) { result[i] = unpaired[ui++]; }
+  }
+  while (ui < unpaired.length) { result.push(unpaired[ui++]); }
+
+  // Trim trailing nulls — no need for spacers beyond the last real card.
+  while (result.length && result[result.length - 1] === null) result.pop();
+
+  return result;
 }
 
 // ---------- Shift relative label ----------
@@ -306,9 +340,20 @@ function render() {
     }
   }
 
-  renderColumn("shift.student",   groups["student"]   || [], pairInfoMap);
-  renderColumn("shift.resident",  groups["resident"]  || [], pairInfoMap);
-  renderColumn("shift.attending", groups["attending"] || [], pairInfoMap);
+  const students   = groups["student"]   || [];
+  const residents  = groups["resident"]  || [];
+  const attendings = groups["attending"] || [];
+
+  const alignedResidents  = students.length
+    ? reorderForAlignment(students, residents,  pairings)
+    : residents;
+  const alignedAttendings = students.length
+    ? reorderForAlignment(students, attendings, pairings)
+    : attendings;
+
+  renderColumn("shift.student",   students,          pairInfoMap);
+  renderColumn("shift.resident",  alignedResidents,  pairInfoMap);
+  renderColumn("shift.attending", alignedAttendings, pairInfoMap);
 
   renderStatus();
 }

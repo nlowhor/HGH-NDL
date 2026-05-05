@@ -243,6 +243,11 @@ main {
   background: color-mix(in srgb, var(--card) 90%, var(--pair-color) 10%);
 }
 
+.card--spacer {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--border);
