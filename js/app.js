@@ -91,6 +91,11 @@ function shiftLabel(notes) {
   return stripped || null;
 }
 
+function shiftDisplayName(shiftKey) {
+  const def = config.shifts.find((s) => s.name === shiftKey);
+  return def ? def.label : shiftKey.charAt(0).toUpperCase() + shiftKey.slice(1);
+}
+
 function isFastTrack(row) {
   return /fast.?track/i.test(row.notes || "");
 }
@@ -105,12 +110,10 @@ function isFastTrack(row) {
 function computeStudentPairings(students, residents, attendings) {
   const pairings = new Map();
 
-  // Fast-track sub-shift: pair by position.
-  const ftStudents = students.filter(isFastTrack);
-  const ftSeniors  = residents.filter(
-    (r) => !isBackup(r) && /\b(r[34]|pgy-?[34])\b/i.test(r.title || "") && isFastTrack(r)
-  );
-  ftStudents.forEach((st, i) => { if (ftSeniors[i]) pairings.set(st, [ftSeniors[i]]); });
+  // Fast-track sub-shift: pair by position. Any resident on fast track qualifies.
+  const ftStudents   = students.filter(isFastTrack);
+  const ftResidents  = residents.filter((r) => !isBackup(r) && isFastTrack(r));
+  ftStudents.forEach((st, i) => { if (ftResidents[i]) pairings.set(st, [ftResidents[i]]); });
 
   // Main-shift: apply the four rules.
   const mainStudents  = students.filter((s) => !isFastTrack(s));
@@ -179,9 +182,9 @@ function personCardContent(row, partners = []) {
     pairLine = el("div", { class: "card__pair" }, `Paired with ${names}`);
   }
 
-  // For students, fall back to capitalised shift name when notes have no label.
+  // For students, fall back to the config shift label when notes have no display text.
   const labelText = shiftLabel(row.notes) ||
-    (row.role === "student" ? row.shift.charAt(0).toUpperCase() + row.shift.slice(1) : null);
+    (row.role === "student" ? shiftDisplayName(row.shift) : null);
 
   const info = el("div", { class: "card__info" }, [
     el("div", { class: "card__firstname" }, firstName),
