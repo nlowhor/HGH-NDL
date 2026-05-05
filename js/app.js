@@ -49,8 +49,7 @@ function isBackup(row) {
 
 function isSeniorResident(row) {
   // Exclude residents on specialty sub-shifts (e-swing, d-swing, fast track, etc.).
-  // Use a blacklist so unknown-but-normal shift names still qualify.
-  const subShift = /fast.?track|[a-z][- ]swing\b/i.test(row.notes || "");
+  const subShift = /fast.?track|\bft\b|[a-z][- ]swing\b/i.test(row.notes || "");
   return (
     row.role === "resident" &&
     /\b(r[34]|pgy-?[34])\b/i.test(row.title || "") &&
@@ -92,7 +91,7 @@ function shiftDisplayName(shiftKey) {
 }
 
 function isFastTrack(row) {
-  return /fast.?track/i.test(row.notes || "");
+  return /fast.?track|\bft\b/i.test(row.notes || "");
 }
 
 // Returns Map<studentRow, partnerRow[]>.
@@ -115,7 +114,7 @@ function computeStudentPairings(students, residents, attendings) {
   const mainSeniors   = residents.filter(isSeniorResident);
   const juniors       = residents.filter(isJuniorResident);
   const mainAttending = attendings.filter(
-    (r) => !isBackup(r) && !/fast.?track|[a-z][- ]swing\b/i.test(r.notes || "")
+    (r) => !isBackup(r) && !/fast.?track|\bft\b|[a-z][- ]swing\b/i.test(r.notes || "")
   );
 
   const n = mainStudents.length;

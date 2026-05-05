@@ -166,7 +166,8 @@ export async function loadSyncLog() {
   }
 }
 
-const SUB_SHIFT_RE = /fast.?track|[a-z][- ]?swing|pit\b/i;
+const SUB_SHIFT_RE  = /fast.?track|\bft\b|[a-z][- ]?swing|pit\b/i;
+const FAST_TRACK_RE = /fast.?track|\bft\b/i;
 
 // Normalized shift label for sorting: strip time ranges and pairing markers.
 function shiftSortLabel(notes) {
@@ -176,14 +177,28 @@ function shiftSortLabel(notes) {
     .replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-// Sort key: [isBackup, isSubShift, shiftLabel].
-// Result: main-shift assignments (Day 1, Day 2, Day A …) first, sub-shifts and
-// backups last; within each tier, lexicographic by the shift label.
+// Within sub-shifts: fast track (0) sorts before swing/e-swing/d-swing (1).
+function subShiftOrder(label) {
+  return FAST_TRACK_RE.test(label) ? 0 : 1;
+}
+
+// PGY level descending: R4/PGY4 → 0, R3 → 1, R2 → 2, R1 → 3, unknown → 4.
+function pgyOrder(r) {
+  const m = (r.title || '').match(/\b(?:r|pgy-?)([1-4])\b/i);
+  return m ? 4 - parseInt(m[1], 10) : 4;
+}
+
+// Sort key: [isBackup, isSubShift, subShiftOrder, pgyOrder, shiftLabel].
+// Main shifts first with senior residents before juniors; then fast-track
+// before e-swing within sub-shifts; backups last.
 function shiftSortKey(r) {
   const label = shiftSortLabel(r.notes);
+  const isSub = SUB_SHIFT_RE.test(label) ? 1 : 0;
   return [
     /backup/i.test(r.notes || '') ? 1 : 0,
-    SUB_SHIFT_RE.test(label)      ? 1 : 0,
+    isSub,
+    isSub ? subShiftOrder(label) : 0,
+    pgyOrder(r),
     label,
   ];
 }
