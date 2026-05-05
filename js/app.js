@@ -207,6 +207,51 @@ function personCard(row, partners = [], pairColor = null) {
   return card;
 }
 
+// When a column has more than this many real entries, the extras are folded into
+// a single compact overflow card in the (MAX_NORMAL+1)th slot.
+const MAX_NORMAL = 3;
+
+function overflowCard(rows, pairInfoMap) {
+  const wrapper = el("div", { class: "card card--overflow" });
+  for (const r of rows) {
+    const info        = pairInfoMap.get(r) || {};
+    const displayName = (r.matched_name || r.name).trim();
+    const [firstName, ...rest] = displayName.split(/\s+/);
+    const lastName = rest.join(" ");
+
+    const photo = el("div", { class: "card__overflow-photo" });
+    if (r.photo_url) {
+      const img = el("img", { src: r.photo_url, alt: displayName, loading: "lazy" });
+      img.addEventListener("error", () => { photo.innerHTML = ""; photo.textContent = initials(displayName); });
+      photo.appendChild(img);
+    } else {
+      photo.textContent = initials(displayName);
+    }
+
+    let levelLine = null;
+    if (r.role === "resident" && r.title) {
+      const m = r.title.match(/\b(R[1-4]|PGY-?[1-4])\b/i);
+      if (m) levelLine = el("div", { class: "card__overflow-level" }, m[1].toUpperCase().replace("PGY", "PGY-"));
+    } else if (r.role === "student") {
+      const lbl = (r.title && /\bms[1-4]\b/i.test(r.title)) ? r.title.trim().toUpperCase() : "MS";
+      levelLine = el("div", { class: "card__overflow-level" }, lbl);
+    }
+
+    const infoEl = el("div", { class: "card__overflow-info" }, [
+      el("div", { class: "card__overflow-firstname" }, firstName),
+      lastName ? el("div", { class: "card__overflow-lastname" }, lastName) : null,
+      levelLine,
+    ]);
+
+    const item = el("div", { class: "card__overflow-item" + (info.color ? " is-paired" : "") });
+    if (info.color) item.style.setProperty("--pair-color", info.color);
+    item.appendChild(photo);
+    item.appendChild(infoEl);
+    wrapper.appendChild(item);
+  }
+  return wrapper;
+}
+
 // pairInfoMap: Map<row, { partners: row[], color: string|null }>
 // rows may contain null entries, which render as invisible spacers to preserve row alignment.
 function renderColumn(targetKey, rows, pairInfoMap = new Map()) {
@@ -218,13 +263,18 @@ function renderColumn(targetKey, rows, pairInfoMap = new Map()) {
     host.appendChild(el("div", { class: "empty" }, "No one listed."));
     return;
   }
+  const overflowSet = new Set(realRows.slice(MAX_NORMAL));
   for (const r of rows) {
+    if (overflowSet.has(r)) continue;
     if (r == null) {
       host.appendChild(el("div", { class: "card card--spacer" }));
     } else {
       const info = pairInfoMap.get(r) || {};
       host.appendChild(personCard(r, info.partners || [], info.color || null));
     }
+  }
+  if (overflowSet.size) {
+    host.appendChild(overflowCard(realRows.slice(MAX_NORMAL), pairInfoMap));
   }
 }
 

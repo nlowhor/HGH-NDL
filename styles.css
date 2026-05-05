@@ -250,6 +250,87 @@ main {
   font-style: italic;
 }
 
+/* ── Overflow card (4th slot when column has > 3 entries) ───────────────────── */
+
+.card--overflow {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0 14px;
+  gap: 0;
+}
+
+.card__overflow-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.card__overflow-item + .card__overflow-item {
+  border-top: 1px solid var(--border);
+}
+
+.card__overflow-item.is-paired {
+  border-color: var(--pair-color);
+}
+
+.card__overflow-photo {
+  flex: 0 0 auto;
+  align-self: stretch;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--panel-2) center/cover no-repeat;
+  border: 2px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.card__overflow-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.card__overflow-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.card__overflow-firstname {
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card__overflow-lastname {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card__overflow-level {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
 /* ── Large screens (billboard) ───────────────────────────────────────────────── */
 
 @media (min-width: 900px) {
