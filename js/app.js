@@ -274,7 +274,10 @@ function renderColumn(targetKey, rows, pairInfoMap = new Map()) {
 
   for (const r of rows) {
     if (r == null) {
-      host.appendChild(el("div", { class: "card card--spacer" }));
+      // Include a photo placeholder so the spacer matches real card height.
+      host.appendChild(el("div", { class: "card card--spacer" }, [
+        el("div", { class: "card__photo" }),
+      ]));
     } else if (normalSet.has(r)) {
       const info = pairInfoMap.get(r) || {};
       host.appendChild(personCard(r, info.partners || [], info.color || null));
