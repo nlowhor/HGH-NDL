@@ -207,19 +207,18 @@ function personCard(row, partners = [], pairColor = null) {
   return card;
 }
 
-// When a column has more than this many real entries, the extras are folded into
-// a single compact overflow card in the (MAX_NORMAL+1)th slot.
-const MAX_NORMAL = 3;
+// When a column has 5+ real entries, entries 4+ are shown side-by-side in a row.
+const MAX_NORMAL = 4;
 
-function overflowCard(rows, pairInfoMap) {
-  const wrapper = el("div", { class: "card card--overflow" });
+function overflowRow(rows, pairInfoMap) {
+  const wrapper = el("div", { class: "cards__overflow-row" });
   for (const r of rows) {
     const info        = pairInfoMap.get(r) || {};
     const displayName = (r.matched_name || r.name).trim();
     const [firstName, ...rest] = displayName.split(/\s+/);
     const lastName = rest.join(" ");
 
-    const photo = el("div", { class: "card__overflow-photo" });
+    const photo = el("div", { class: "card__mini-photo" });
     if (r.photo_url) {
       const img = el("img", { src: r.photo_url, alt: displayName, loading: "lazy" });
       img.addEventListener("error", () => { photo.innerHTML = ""; photo.textContent = initials(displayName); });
@@ -228,26 +227,23 @@ function overflowCard(rows, pairInfoMap) {
       photo.textContent = initials(displayName);
     }
 
-    let levelLine = null;
+    let levelText = null;
     if (r.role === "resident" && r.title) {
       const m = r.title.match(/\b(R[1-4]|PGY-?[1-4])\b/i);
-      if (m) levelLine = el("div", { class: "card__overflow-level" }, m[1].toUpperCase().replace("PGY", "PGY-"));
+      if (m) levelText = m[1].toUpperCase().replace("PGY", "PGY-");
     } else if (r.role === "student") {
-      const lbl = (r.title && /\bms[1-4]\b/i.test(r.title)) ? r.title.trim().toUpperCase() : "MS";
-      levelLine = el("div", { class: "card__overflow-level" }, lbl);
+      levelText = (r.title && /\bms[1-4]\b/i.test(r.title)) ? r.title.trim().toUpperCase() : "MS";
     }
 
-    const infoEl = el("div", { class: "card__overflow-info" }, [
-      el("div", { class: "card__overflow-firstname" }, firstName),
-      lastName ? el("div", { class: "card__overflow-lastname" }, lastName) : null,
-      levelLine,
+    const miniCard = el("div", { class: "card card--mini" + (info.color ? " is-paired" : "") }, [
+      photo,
+      el("div", { class: "card__mini-info" }, [
+        el("div", { class: "card__mini-name" }, firstName + (lastName ? ` ${lastName}` : "")),
+        levelText ? el("div", { class: "card__mini-level" }, levelText) : null,
+      ]),
     ]);
-
-    const item = el("div", { class: "card__overflow-item" + (info.color ? " is-paired" : "") });
-    if (info.color) item.style.setProperty("--pair-color", info.color);
-    item.appendChild(photo);
-    item.appendChild(infoEl);
-    wrapper.appendChild(item);
+    if (info.color) miniCard.style.setProperty("--pair-color", info.color);
+    wrapper.appendChild(miniCard);
   }
   return wrapper;
 }
@@ -263,18 +259,21 @@ function renderColumn(targetKey, rows, pairInfoMap = new Map()) {
     host.appendChild(el("div", { class: "empty" }, "No one listed."));
     return;
   }
-  const overflowSet = new Set(realRows.length > 4 ? realRows.slice(MAX_NORMAL) : []);
+  // Only overflow if there are strictly more than MAX_NORMAL real entries.
+  const normalRows  = realRows.length > MAX_NORMAL ? realRows.slice(0, MAX_NORMAL - 1) : realRows;
+  const overflowRows = realRows.length > MAX_NORMAL ? realRows.slice(MAX_NORMAL - 1)   : [];
+  const normalSet   = new Set(normalRows);
+
   for (const r of rows) {
-    if (overflowSet.has(r)) continue;
     if (r == null) {
       host.appendChild(el("div", { class: "card card--spacer" }));
-    } else {
+    } else if (normalSet.has(r)) {
       const info = pairInfoMap.get(r) || {};
       host.appendChild(personCard(r, info.partners || [], info.color || null));
     }
   }
-  if (overflowSet.size) {
-    host.appendChild(overflowCard(realRows.slice(MAX_NORMAL), pairInfoMap));
+  if (overflowRows.length) {
+    host.appendChild(overflowRow(overflowRows, pairInfoMap));
   }
 }
 

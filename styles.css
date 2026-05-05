@@ -168,7 +168,7 @@ main {
 }
 
 .card.is-paired {
-  border-color: var(--pair-color);
+  border: 4px solid var(--pair-color);
   background: color-mix(in srgb, var(--card) 90%, var(--pair-color) 10%);
 }
 
@@ -250,36 +250,24 @@ main {
   font-style: italic;
 }
 
-/* ── Overflow card (4th slot when column has > 3 entries) ───────────────────── */
+/* ── Overflow row (5th+ entries shown side by side in slot 4) ───────────────── */
 
-.card--overflow {
-  flex-direction: column;
-  align-items: stretch;
-  padding: 0 14px;
-  gap: 0;
-}
-
-.card__overflow-item {
-  flex: 1;
+.cards__overflow-row {
   display: flex;
+  gap: 8px;
+}
+
+.card--mini {
+  flex: 1;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
-  padding: 5px 0;
-  min-height: 0;
-  overflow: hidden;
+  text-align: center;
+  padding: 8px 6px;
+  gap: 6px;
 }
 
-.card__overflow-item + .card__overflow-item {
-  border-top: 1px solid var(--border);
-}
-
-.card__overflow-item.is-paired {
-  border-color: var(--pair-color);
-}
-
-.card__overflow-photo {
-  flex: 0 0 auto;
-  align-self: stretch;
+.card__mini-photo {
+  width: 55%;
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--panel-2) center/cover no-repeat;
@@ -289,43 +277,35 @@ main {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 22px;
   font-weight: 700;
 }
 
-.card__overflow-photo img {
+.card__mini-photo img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
-.card__overflow-info {
-  flex: 1;
-  min-width: 0;
+.card__mini-info {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  min-width: 0;
+  width: 100%;
 }
 
-.card__overflow-firstname {
+.card__mini-name {
   font-weight: 700;
-  font-size: 13px;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.card__overflow-lastname {
-  color: var(--muted);
   font-size: 12px;
-  white-space: nowrap;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.card__overflow-level {
+.card__mini-level {
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
