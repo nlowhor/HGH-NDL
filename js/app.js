@@ -91,6 +91,12 @@ function shiftLabel(notes) {
   return stripped || null;
 }
 
+function extractTimeRange(notes) {
+  if (!notes) return null;
+  const m = notes.match(/\d{1,2}(?::\d{2})?\s*[ap]m?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*[ap]m?/i);
+  return m ? m[0] : null;
+}
+
 function shiftDisplayName(shiftKey) {
   const def = config.shifts.find((s) => s.name === shiftKey);
   return def ? def.label : shiftKey.charAt(0).toUpperCase() + shiftKey.slice(1);
@@ -182,9 +188,14 @@ function personCardContent(row, partners = []) {
     pairLine = el("div", { class: "card__pair" }, `Paired with ${names}`);
   }
 
-  // For students, fall back to the config shift label when notes have no display text.
-  const labelText = shiftLabel(row.notes) ||
-    (row.role === "student" ? shiftDisplayName(row.shift) : null);
+  // For students: "{label} · {time}" when notes contain a time range, or
+  // just the config shift label when notes are absent / time-range-only.
+  let labelText = shiftLabel(row.notes);
+  if (row.role === "student") {
+    const time = extractTimeRange(row.notes);
+    const base = labelText || shiftDisplayName(row.shift);
+    labelText = time ? `${base} · ${time}` : base;
+  }
 
   const info = el("div", { class: "card__info" }, [
     el("div", { class: "card__firstname" }, firstName),
