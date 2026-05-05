@@ -133,7 +133,8 @@ function computeStudentPairings(students, residents, attendings) {
     const resStudent = mainStudents.find((s) => /-res\b/i.test(s.notes || "")) || mainStudents[0];
     const attStudent = mainStudents.find((s) => /-att\b/i.test(s.notes || "")) || mainStudents[1];
     pairings.set(resStudent, [mainSeniors[0]]);
-    if (mainAttending.length) pairings.set(attStudent, [mainAttending[0]]);
+    // Pair with up to 2 main attendings (either/or when both are available).
+    if (mainAttending.length) pairings.set(attStudent, mainAttending.slice(0, 2));
   } else if (n >= 1 && s === 0 && mainAttending.length >= 1) {
     // No senior residents present — pair students with main attendings.
     if (n === 1) {
@@ -351,6 +352,49 @@ function alignStudentsToPartners(students, residents, attendings, pairings) {
   return result;
 }
 
+// Mirrors alignStudentsToPartners: inserts null spacers into the attending
+// column so that each paired attending lands on the same row as its student.
+// Unpaired attendings fill remaining slots in their natural order.
+function alignAttendingsToStudents(attendings, alignedStudents, pairings) {
+  const partnerToStudent = new Map();
+  for (const [student, partners] of pairings) {
+    for (const p of partners) {
+      if (!partnerToStudent.has(p)) partnerToStudent.set(p, student);
+    }
+  }
+
+  const studentToRow = new Map();
+  for (let i = 0; i < alignedStudents.length; i++) {
+    if (alignedStudents[i]) studentToRow.set(alignedStudents[i], i);
+  }
+
+  const totalRows = Math.max(attendings.length, alignedStudents.length);
+  const result = new Array(totalRows).fill(null);
+  const used   = new Set();
+
+  for (const att of attendings) {
+    const student = partnerToStudent.get(att);
+    if (student && studentToRow.has(student)) {
+      const row = studentToRow.get(student);
+      while (result.length <= row) result.push(null);
+      if (!result[row]) {
+        result[row] = att;
+        used.add(att);
+      }
+    }
+  }
+
+  const unpaired = attendings.filter(a => !used.has(a));
+  let ui = 0;
+  for (let i = 0; i < result.length && ui < unpaired.length; i++) {
+    if (!result[i]) result[i] = unpaired[ui++];
+  }
+  while (ui < unpaired.length) result.push(unpaired[ui++]);
+
+  while (result.length && !result[result.length - 1]) result.pop();
+  return result;
+}
+
 // ---------- Shift relative label ----------
 
 function shiftRelativeLabel(viewed, nowShift) {
@@ -428,9 +472,13 @@ function render() {
     ? alignStudentsToPartners(students, residents, attendings, pairings)
     : students;
 
-  renderColumn("shift.student",   alignedStudents, pairInfoMap);
-  renderColumn("shift.resident",  residents,       pairInfoMap);
-  renderColumn("shift.attending", attendings,      pairInfoMap);
+  const alignedAttendings = attendings.length
+    ? alignAttendingsToStudents(attendings, alignedStudents, pairings)
+    : attendings;
+
+  renderColumn("shift.resident",   residents,        pairInfoMap);
+  renderColumn("shift.student",    alignedStudents,  pairInfoMap);
+  renderColumn("shift.attending",  alignedAttendings, pairInfoMap);
 }
 
 
