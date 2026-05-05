@@ -111,13 +111,6 @@ main {
   margin-left: auto;
 }
 
-.site-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--ink);
-  white-space: nowrap;
-}
-
 .shift-section__label {
   font-size: 13px;
   font-weight: 600;
