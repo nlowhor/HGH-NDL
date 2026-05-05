@@ -13,24 +13,11 @@
       <div id="clock" class="clock" aria-live="polite"></div>
     </div>
     <nav class="shift-nav" aria-label="Shift navigation">
-      <button id="prev-shift-btn" class="shift-nav__btn">&#8592; Previous</button>
+      <button id="prev-shift-btn" class="shift-nav__btn">&#8592; Previous Shift</button>
       <button id="now-btn" class="shift-nav__btn shift-nav__btn--now">Now</button>
-      <button id="next-shift-btn" class="shift-nav__btn">Next &#8594;</button>
+      <input type="datetime-local" id="when" class="shift-nav__when" />
+      <button id="next-shift-btn" class="shift-nav__btn">Next Shift &#8594;</button>
     </nav>
-    <details class="settings-panel">
-      <summary class="settings-toggle" title="Settings" aria-label="Settings">&#9881;</summary>
-      <div class="settings-content">
-        <label class="toggle" title="Show The Pitt sample cast instead of live data">
-          <input type="checkbox" id="demo-toggle" />
-          <span>Demo data</span>
-        </label>
-        <label class="picker">
-          <span>View time</span>
-          <input type="datetime-local" id="when" />
-        </label>
-        <button id="refresh-btn" type="button">Refresh</button>
-      </div>
-    </details>
   </header>
 
   <main>
@@ -49,7 +36,6 @@
       </div>
     </section>
 
-    <footer id="status" class="status"></footer>
   </main>
 
   <script type="module" src="js/app.js?v=20"></script>

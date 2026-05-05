@@ -2,32 +2,21 @@
 // for the selected time, update clock, and handle user interactions.
 
 import { config } from "./config.js";
-import { loadAllRosters, rosterForShift, groupByRole, loadSyncLog } from "./data.js";
+import { loadAllRosters, rosterForShift, groupByRole } from "./data.js";
 import { shiftAt, nextShiftAfter, prevShiftBefore, describeShift, shiftStartDate } from "./shifts.js";
-
-const DEMO_STORAGE_KEY = "hghNdl.demoMode";
 
 function hasLiveSource() {
   const s = config.sources;
   return !!s.sheetCsvUrl || !!s.docPubUrl || (s.websites && s.websites.length > 0);
 }
 
-function initialDemoMode() {
-  const stored = localStorage.getItem(DEMO_STORAGE_KEY);
-  if (stored === "true") return true;
-  if (stored === "false") return false;
-  // Default: demo ON until a live source is configured.
-  return !hasLiveSource();
-}
-
 const state = {
   rows: [],
   diagnostics: [],
   lastLoaded: null,
-  syncLog: { attending: null, resident: null, student: null },
   // null => track real time; Date => user picked a time
   selectedWhen: null,
-  demoMode: initialDemoMode(),
+  demoMode: !hasLiveSource(),
   tickTimer: null,
   reloadTimer: null,
 };
@@ -354,39 +343,16 @@ function render() {
   renderColumn("shift.student",   students,          pairInfoMap);
   renderColumn("shift.resident",  alignedResidents,  pairInfoMap);
   renderColumn("shift.attending", alignedAttendings, pairInfoMap);
-
-  renderStatus();
 }
 
-function fmtSyncTime(d) {
-  if (!d) return "never synced";
-  return d.toLocaleString(undefined, {
-    weekday: "short", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
-  });
-}
-
-function renderStatus() {
-  const log = state.syncLog;
-  const lines = [
-    `Attendings last synced: ${fmtSyncTime(log.attending)}`,
-    `Residents last synced: ${fmtSyncTime(log.resident)}`,
-    `Students last synced: ${fmtSyncTime(log.student)}`,
-  ];
-  document.getElementById("status").textContent = lines.join("\n");
-}
 
 // ---------- Data loading ----------
 
 async function reload() {
   try {
-    const [{ rows, diagnostics }, syncLog] = await Promise.all([
-      loadAllRosters({ demoMode: state.demoMode }),
-      loadSyncLog().catch(() => state.syncLog),
-    ]);
+    const { rows, diagnostics } = await loadAllRosters({ demoMode: state.demoMode });
     state.rows = rows;
     state.diagnostics = diagnostics;
-    state.syncLog = syncLog;
     state.lastLoaded = new Date();
   } catch (err) {
     state.diagnostics = [{ name: "loader", ok: false, error: String(err) }];
@@ -414,8 +380,6 @@ function navigateShift(direction) {
 function wire() {
   const input = document.getElementById("when");
   const nowBtn = document.getElementById("now-btn");
-  const refreshBtn = document.getElementById("refresh-btn");
-  const demoToggle = document.getElementById("demo-toggle");
 
   input.value = toLocalInputValue(new Date());
   input.addEventListener("change", () => {
@@ -430,28 +394,8 @@ function wire() {
     render();
   });
 
-  refreshBtn.addEventListener("click", () => {
-    reload();
-    document.querySelector('.settings-panel')?.removeAttribute('open');
-  });
-
-  // Close settings panel when clicking outside of it.
-  document.addEventListener("click", (e) => {
-    const panel = document.querySelector('.settings-panel');
-    if (panel && panel.open && !panel.contains(e.target)) {
-      panel.removeAttribute('open');
-    }
-  });
-
   document.getElementById("prev-shift-btn").addEventListener("click", () => navigateShift("prev"));
   document.getElementById("next-shift-btn").addEventListener("click", () => navigateShift("next"));
-
-  demoToggle.checked = state.demoMode;
-  demoToggle.addEventListener("change", () => {
-    state.demoMode = demoToggle.checked;
-    localStorage.setItem(DEMO_STORAGE_KEY, String(state.demoMode));
-    reload();
-  });
 
   // Tick: update clock + recompute shift on schedule while in live mode.
   state.tickTimer = setInterval(() => {
