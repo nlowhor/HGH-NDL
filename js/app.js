@@ -286,14 +286,7 @@ function currentWhen() {
 }
 
 function renderClock() {
-  const when = currentWhen();
   const live = state.selectedWhen == null;
-  const fmt = when.toLocaleString(undefined, {
-    weekday: "short", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
-  });
-  document.getElementById("clock").textContent =
-    live ? `Live · ${fmt}` : `Viewing · ${fmt}`;
   document.getElementById("now-btn").classList.toggle("is-live", live);
 }
 

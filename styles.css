@@ -26,15 +26,9 @@ html, body {
 /* ── Section title row (title + clock left, nav right) ───────────────────────── */
 
 h1 {
-  margin: 0 0 2px;
+  margin: 0;
   font-size: 20px;
   letter-spacing: 0.2px;
-}
-
-.clock {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  font-size: 16px;
 }
 
 .shift-section__title-row {
@@ -43,11 +37,6 @@ h1 {
   align-items: center;
   gap: 12px;
   margin-bottom: 10px;
-}
-
-.shift-section__title-left {
-  display: flex;
-  flex-direction: column;
 }
 
 /* ── Shift navigation (← Previous | Now | Next →) ───────────────────────────── */
