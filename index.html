@@ -4,25 +4,23 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>HGH Emergency Department</title>
-  <link rel="stylesheet" href="styles.css?v=23" />
+  <link rel="stylesheet" href="styles.css?v=24" />
 </head>
 <body>
   <main>
     <section id="shift-section" class="shift-section">
       <div class="shift-section__head">
-        <div class="shift-section__head-left">
+        <div id="shift-meta" class="shift-section__meta"></div>
+        <div id="shift-relative" class="shift-section__label"></div>
+        <div class="shift-section__head-right">
           <nav class="shift-nav" aria-label="Shift navigation">
             <button id="prev-shift-btn" class="shift-nav__btn">&#8592; Previous Shift</button>
             <button id="now-btn" class="shift-nav__btn shift-nav__btn--now">Now</button>
             <input type="datetime-local" id="when" class="shift-nav__when" />
             <button id="next-shift-btn" class="shift-nav__btn">Next Shift &#8594;</button>
           </nav>
-          <div class="shift-section__meta-row">
-            <div id="shift-meta" class="shift-section__meta"></div>
-            <div id="shift-relative" class="shift-section__label"></div>
-          </div>
+          <span class="site-title">HGH ED</span>
         </div>
-        <h1>HGH ED</h1>
       </div>
       <div class="roles">
         <h3 class="role-header">Students</h3>
