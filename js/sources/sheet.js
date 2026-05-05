@@ -45,9 +45,14 @@ function rewritePhotoUrl(url) {
   return url;
 }
 
+function cacheBust(url) {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}_cb=${Date.now()}`;
+}
+
 export async function fetchSheetRoster(url) {
   if (!url) return [];
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetch(cacheBust(url), { cache: "no-store" });
   if (!res.ok) throw new Error(`Sheet fetch failed: HTTP ${res.status}`);
   const text = await res.text();
   return normalizeRows(parseCsv(text));

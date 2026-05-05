@@ -24,13 +24,20 @@ function normalizeName(s) {
     .split(/\s+/).filter(Boolean).sort().join(' ');
 }
 
+// Appends a timestamp query param so Google's CDN doesn't serve a stale
+// cached copy of a published spreadsheet CSV.
+function cacheBust(url) {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}_cb=${Date.now()}`;
+}
+
 // Fetch a person-data tab published as CSV and return a Map:
 //   normalizeName(name) → { name, photo_url, title, notes }
 // Expected CSV columns: name, photo_url, title, notes (extras are ignored).
 async function fetchPersonSheet(url) {
   if (!url) return new Map();
   try {
-    const res = await fetch(url, { cache: 'no-store' });
+    const res = await fetch(cacheBust(url), { cache: 'no-store' });
     if (!res.ok) return new Map();
     const rows = parseCsv(await res.text());
     const map = new Map();
