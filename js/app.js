@@ -94,13 +94,15 @@ function isFastTrack(row) {
   return /fast.?track|\bft\b/i.test(row.notes || "");
 }
 
-// Returns Map<studentRow, partnerRow[]>.
 // Fast-track students pair with fast-track R3/R4s by position.
-// Main-shift students follow four rules:
+// Main-shift students follow these rules (in priority order):
 //   1 student + 1 senior resident  → pairs to that senior
 //   1 student + 2 seniors          → pairs to either (show both names)
 //   2 students + 2 seniors         → student[0] → senior[0], student[1] → senior[1]
 //   2 students + 1 senior + ≥1 R2  → -res student → senior, -att student → first main attending
+//   n students + 0 seniors + ≥1 main attending → pair with attendings:
+//     1 student + 2 attendings     → either/or (show both names)
+//     else pair 1:1 by position
 function computeStudentPairings(students, residents, attendings) {
   const pairings = new Map();
 
@@ -109,7 +111,7 @@ function computeStudentPairings(students, residents, attendings) {
   const ftResidents  = residents.filter((r) => !isBackup(r) && isFastTrack(r));
   ftStudents.forEach((st, i) => { if (ftResidents[i]) pairings.set(st, [ftResidents[i]]); });
 
-  // Main-shift: apply the four rules.
+  // Main-shift: apply the rules.
   const mainStudents  = students.filter((s) => !isFastTrack(s));
   const mainSeniors   = residents.filter(isSeniorResident);
   const juniors       = residents.filter(isJuniorResident);
@@ -132,6 +134,17 @@ function computeStudentPairings(students, residents, attendings) {
     const attStudent = mainStudents.find((s) => /-att\b/i.test(s.notes || "")) || mainStudents[1];
     pairings.set(resStudent, [mainSeniors[0]]);
     if (mainAttending.length) pairings.set(attStudent, [mainAttending[0]]);
+  } else if (n >= 1 && s === 0 && mainAttending.length >= 1) {
+    // No senior residents present — pair students with main attendings.
+    if (n === 1) {
+      // 1 student + 2 attendings → either/or; 1 student + 1 attending → direct pair.
+      pairings.set(mainStudents[0], mainAttending.slice(0, 2));
+    } else {
+      // Multiple students: pair 1:1 by position.
+      for (let i = 0; i < n && i < mainAttending.length; i++) {
+        pairings.set(mainStudents[i], [mainAttending[i]]);
+      }
+    }
   }
 
   return pairings;
@@ -312,11 +325,15 @@ function alignStudentsToPartners(students, residents, attendings, pairings) {
     }
   }
 
-  // For students paired only with an attending (not a resident), place them
-  // at the attending's row index if that slot is still free.
+  // For students paired with an attending (and not already placed by a resident
+  // pairing), place them at the attending's row index. Extend result if the
+  // attending list is longer than the resident list.
   for (let i = 0; i < attendings.length; i++) {
     const student = partnerToStudent.get(attendings[i]);
-    if (student && !used.has(student) && !result[i]) {
+    if (!student || used.has(student)) continue;
+    // Grow the array if this attending sits beyond the resident-count rows.
+    while (result.length <= i) result.push(null);
+    if (!result[i]) {
       result[i] = student;
       used.add(student);
     }
