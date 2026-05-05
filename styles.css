@@ -238,50 +238,6 @@ main {
   min-height: 40px;
 }
 
-/* ── Pairs section (students left, residents right) ──────────────────────────── */
-
-/* Spans student + resident columns; inner 2-col grid keeps each card ~1fr wide. */
-.pairs {
-  grid-column: 1 / 3;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  align-items: start;
-}
-
-/* Solo student in the left sub-column. */
-.pair-group--student  { grid-column: 1; }
-
-/* Solo resident in the right sub-column. */
-.pair-group--resident { grid-column: 2; }
-
-/* ── Paired card ─────────────────────────────────────────────────────────────── */
-
-/* A single card spanning both sub-columns, same height as a solo card. */
-.card--paired {
-  grid-column: 1 / -1;
-  padding: 0;
-  gap: 0;
-  border-color: rgba(78, 163, 255, 0.45);
-  background: color-mix(in srgb, var(--card) 94%, var(--accent) 6%);
-}
-
-.card__person {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 14px;
-  min-width: 0;
-}
-
-.card__divider {
-  width: 1px;
-  align-self: stretch;
-  background: var(--border);
-  flex-shrink: 0;
-}
-
 .card {
   background: var(--card);
   border: 1px solid var(--border);
@@ -396,14 +352,6 @@ main {
   .topbar h1 { font-size: 16px; }
 
   .roles { grid-template-columns: 1fr; gap: 16px; }
-
-  .pairs { grid-column: 1; grid-template-columns: 1fr; }
-
-  .pair-group--student,
-  .pair-group--resident,
-  .card--paired { grid-column: 1; }
-
-  .card--paired { flex-direction: column; }
 
   .card__photo { font-size: 38px; }
   .card__firstname { font-size: 22px; }
