@@ -74,7 +74,7 @@ function shiftLabel(notes) {
   // for pairing logic and should not be shown on the card.
   const stripped = notes
     .replace(/\s*\d{1,2}(?::\d{2})?\s*[ap]m?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*[ap]m?/gi, '')
-    .replace(/\s+-(?:res|att)\b/gi, '')
+    .replace(/\s*-(?:res|att)\b/gi, '')
     .replace(/\s+/g, ' ').trim();
   return stripped || null;
 }

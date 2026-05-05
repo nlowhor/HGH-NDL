@@ -173,7 +173,7 @@ const FAST_TRACK_RE = /fast.?track|\bft\b/i;
 function shiftSortLabel(notes) {
   return (notes || '')
     .replace(/\s*\d{1,2}(?::\d{2})?\s*[ap]m?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*[ap]m?/gi, '')
-    .replace(/\s+-(?:res|att)\b/gi, '')
+    .replace(/\s*-(?:res|att)\b/gi, '')
     .replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
