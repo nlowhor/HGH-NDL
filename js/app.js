@@ -263,7 +263,7 @@ function renderColumn(targetKey, rows, pairInfoMap = new Map()) {
     host.appendChild(el("div", { class: "empty" }, "No one listed."));
     return;
   }
-  const overflowSet = new Set(realRows.slice(MAX_NORMAL));
+  const overflowSet = new Set(realRows.length > 4 ? realRows.slice(MAX_NORMAL) : []);
   for (const r of rows) {
     if (overflowSet.has(r)) continue;
     if (r == null) {
