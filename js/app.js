@@ -140,7 +140,9 @@ function computeStudentPairings(students, residents, attendings) {
   return pairings;
 }
 
-function personCard(row, partners = []) {
+// Returns [photoEl, infoEl] — the two halves of a card, without the card wrapper.
+// Used directly by personCard and by pairedCard.
+function personCardContent(row, partners = []) {
   const displayName = (row.matched_name || row.name).trim();
   const photo = el("div", { class: "card__photo" });
   if (row.photo_url) {
@@ -154,13 +156,21 @@ function personCard(row, partners = []) {
   } else {
     photo.textContent = initials(displayName);
   }
+
   const [firstName, ...rest] = displayName.split(/\s+/);
   const lastName = rest.join(" ");
+
   let levelLine = null;
   if (row.role === "resident" && row.title) {
     const m = row.title.match(/\b(R[1-4]|PGY-?[1-4])\b/i);
     if (m) levelLine = el("div", { class: "card__level" }, m[1].toUpperCase().replace("PGY", "PGY-"));
+  } else if (row.role === "student") {
+    const roleLabel = (row.title && /\bms[1-4]\b/i.test(row.title))
+      ? row.title.trim().toUpperCase()
+      : "Medical Student";
+    levelLine = el("div", { class: "card__level card__level--student" }, roleLabel);
   }
+
   let pairLine = null;
   if (partners.length) {
     const names = partners
@@ -168,15 +178,37 @@ function personCard(row, partners = []) {
       .join(" or ");
     pairLine = el("div", { class: "card__pair" }, `Paired with ${names}`);
   }
-  const label = shiftLabel(row.notes);
+
+  // For students, fall back to capitalised shift name when notes have no label.
+  const labelText = shiftLabel(row.notes) ||
+    (row.role === "student" ? row.shift.charAt(0).toUpperCase() + row.shift.slice(1) : null);
+
   const info = el("div", { class: "card__info" }, [
     el("div", { class: "card__firstname" }, firstName),
     lastName ? el("div", { class: "card__lastname" }, lastName) : null,
     levelLine,
-    label ? el("div", { class: "card__shift" }, label) : null,
+    labelText ? el("div", { class: "card__shift" }, labelText) : null,
     pairLine,
   ]);
+
+  return [photo, info];
+}
+
+function personCard(row, partners = []) {
+  const [photo, info] = personCardContent(row, partners);
   return el("div", { class: "card" }, [photo, info]);
+}
+
+// A single card spanning both student and resident columns, same height as a
+// solo card. Student on the left, resident on the right.
+function pairedCard(student, resident) {
+  const [stuPhoto, stuInfo] = personCardContent(student);
+  const [resPhoto, resInfo] = personCardContent(resident);
+  return el("div", { class: "card card--paired" }, [
+    el("div", { class: "card__person" }, [stuPhoto, stuInfo]),
+    el("div", { class: "card__divider" }),
+    el("div", { class: "card__person" }, [resPhoto, resInfo]),
+  ]);
 }
 
 function renderColumn(targetKey, rows, pairingsMap = new Map()) {
@@ -190,46 +222,69 @@ function renderColumn(targetKey, rows, pairingsMap = new Map()) {
   for (const r of rows) host.appendChild(personCard(r, pairingsMap.get(r) || []));
 }
 
-// Renders the combined students+residents column.
-// Paired student+resident are shown side-by-side inside a shared container.
-// Students paired with an attending (rule 4) and unpaired people render solo.
+// Renders the students (left) + residents (right) columns as a shared 2-col grid.
+//
+// Residents are shown in their sorted order (already sorted by groupByRole).
+// For a 1:1 pairing, the paired student appears at the same grid row as their
+// resident inside a single spanning card. "Either or" and attending-paired
+// students render solo below all resident rows.
 function renderPairsColumn(targetKey, students, residents, pairings) {
   const host = document.querySelector(`[data-target="${targetKey}"]`);
   if (!host) return;
   host.innerHTML = "";
 
-  // Track which residents are consumed by a pair group.
-  const pairedResidents = new Set();
-  for (const partners of pairings.values()) {
-    for (const p of partners) { if (p.role === "resident") pairedResidents.add(p); }
-  }
-
-  for (const student of students) {
-    const partners = pairings.get(student) || [];
+  // Build resident → student map for strict 1:1 pairings only.
+  // Rule 2 (either-or, 2 resident partners) stays solo with text label.
+  const residentToStudent = new Map();
+  const visuallyPaired = new Set();
+  for (const [student, partners] of pairings) {
     const resParts = partners.filter((p) => p.role === "resident");
-    const attParts = partners.filter((p) => p.role === "attending");
-
-    if (resParts.length) {
-      // Paired: resident + student side by side in a shared frame spanning both sub-columns.
-      const inner = el("div", { class: "pair-group__inner" });
-      for (const r of resParts) inner.appendChild(personCard(r));
-      inner.appendChild(personCard(student));
-      host.appendChild(el("div", { class: "pair-group pair-group--paired" }, [inner]));
-    } else {
-      // Solo student in the right sub-column. Show "Paired with" if paired with an attending.
-      host.appendChild(el("div", { class: "pair-group pair-group--student" }, [personCard(student, attParts)]));
+    if (resParts.length === 1) {
+      residentToStudent.set(resParts[0], student);
+      visuallyPaired.add(student);
     }
   }
 
-  // Unpaired residents go in the left sub-column.
-  for (const resident of residents) {
-    if (!pairedResidents.has(resident)) {
-      host.appendChild(el("div", { class: "pair-group pair-group--resident" }, [personCard(resident)]));
+  // One grid row per resident (in sort order).
+  residents.forEach((resident, i) => {
+    const gridRow = i + 1;
+    const student = residentToStudent.get(resident);
+    if (student) {
+      // Paired: single card spanning both columns, student left / resident right.
+      const card = pairedCard(student, resident);
+      card.style.gridRow = String(gridRow);
+      host.appendChild(card);
+    } else {
+      // Solo resident in the right sub-column.
+      host.appendChild(el("div", {
+        class: "pair-group--resident",
+        style: { gridColumn: "2", gridRow: String(gridRow) },
+      }, [personCard(resident)]));
+    }
+  });
+
+  // Unpaired students below resident rows (left sub-column).
+  let stuRow = residents.length + 1;
+  for (const student of students) {
+    if (!visuallyPaired.has(student)) {
+      const partners = pairings.get(student) || [];
+      // "Either or" residents or attending partners → show as text label.
+      const labelPartners = partners.filter(
+        (p) => p.role === "attending" || p.role === "resident"
+      );
+      host.appendChild(el("div", {
+        class: "pair-group--student",
+        style: { gridColumn: "1", gridRow: String(stuRow) },
+      }, [personCard(student, labelPartners)]));
+      stuRow++;
     }
   }
 
   if (!host.children.length) {
-    host.appendChild(el("div", { class: "empty" }, "No one listed."));
+    host.appendChild(el("div", {
+      class: "empty",
+      style: { gridColumn: "1 / -1" },
+    }, "No one listed."));
   }
 }
 

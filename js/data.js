@@ -166,6 +166,36 @@ export async function loadSyncLog() {
   }
 }
 
+const SUB_SHIFT_RE = /fast.?track|[a-z][- ]?swing|pit\b/i;
+
+// Normalized shift label for sorting: strip time ranges and pairing markers.
+function shiftSortLabel(notes) {
+  return (notes || '')
+    .replace(/\s*\d{1,2}(?::\d{2})?\s*[ap]m?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*[ap]m?/gi, '')
+    .replace(/\s+-(?:res|att)\b/gi, '')
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+// Sort key: [isBackup, isSubShift, shiftLabel].
+// Result: main-shift assignments (Day 1, Day 2, Day A …) first, sub-shifts and
+// backups last; within each tier, lexicographic by the shift label.
+function shiftSortKey(r) {
+  const label = shiftSortLabel(r.notes);
+  return [
+    /backup/i.test(r.notes || '') ? 1 : 0,
+    SUB_SHIFT_RE.test(label)      ? 1 : 0,
+    label,
+  ];
+}
+
+function cmpSortKeys(ka, kb) {
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] < kb[i]) return -1;
+    if (ka[i] > kb[i]) return  1;
+  }
+  return 0;
+}
+
 // Group rows by role, preserving roles order from config.
 export function groupByRole(rows) {
   const byRole = {};
@@ -173,14 +203,10 @@ export function groupByRole(rows) {
   for (const r of rows) {
     if (byRole[r.role]) byRole[r.role].push(r);
   }
-  // Sort: backup entries last, then alphabetically by name.
-  const isBackup = (r) => /backup/i.test(r.notes);
+  // Residents and attendings: sort by shift assignment label (Day 1, Day 2 … then sub-shifts).
+  // Students: same sort so unpaired students appear in a predictable order.
   for (const k of Object.keys(byRole)) {
-    byRole[k].sort((a, b) => {
-      const ba = isBackup(a), bb = isBackup(b);
-      if (ba !== bb) return ba ? 1 : -1;
-      return a.name.localeCompare(b.name);
-    });
+    byRole[k].sort((a, b) => cmpSortKeys(shiftSortKey(a), shiftSortKey(b)));
   }
   return byRole;
 }
