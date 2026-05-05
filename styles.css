@@ -311,6 +311,14 @@ main {
   color: var(--accent);
 }
 
+.card__mini-shift {
+  font-size: 11px;
+  color: var(--accent-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Large screens (billboard) ───────────────────────────────────────────────── */
 
 @media (min-width: 900px) {

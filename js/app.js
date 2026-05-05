@@ -235,11 +235,19 @@ function overflowRow(rows, pairInfoMap) {
       levelText = (r.title && /\bms[1-4]\b/i.test(r.title)) ? r.title.trim().toUpperCase() : "MS";
     }
 
+    let labelText = shiftLabel(r.notes);
+    if (r.role === "student") {
+      const time = extractTimeRange(r.notes);
+      const base = labelText || shiftDisplayName(r.shift);
+      labelText = time ? `${base} · ${time}` : base;
+    }
+
     const miniCard = el("div", { class: "card card--mini" + (info.color ? " is-paired" : "") }, [
       photo,
       el("div", { class: "card__mini-info" }, [
         el("div", { class: "card__mini-name" }, firstName + (lastName ? ` ${lastName}` : "")),
-        levelText ? el("div", { class: "card__mini-level" }, levelText) : null,
+        levelText  ? el("div", { class: "card__mini-level" }, levelText)  : null,
+        labelText  ? el("div", { class: "card__mini-shift" }, labelText)  : null,
       ]),
     ]);
     if (info.color) miniCard.style.setProperty("--pair-color", info.color);
@@ -277,31 +285,50 @@ function renderColumn(targetKey, rows, pairInfoMap = new Map()) {
   }
 }
 
-// Reorder `pool` (residents or attendings) so that, for each student at index i,
-// their paired partner (if any in pool) appears at index i.
-// Unpaired pool members fill remaining slots in their original order.
-// Returns an array that may contain null entries (spacers) where no pool member exists.
-function reorderForAlignment(students, pool, pairings) {
-  const poolSet = new Set(pool);
-  const result  = new Array(Math.max(students.length, pool.length)).fill(null);
-  const used    = new Set();
-
-  for (let i = 0; i < students.length; i++) {
-    const partners = pairings.get(students[i]) || [];
-    const match = partners.find(p => poolSet.has(p) && !used.has(p));
-    if (match) { result[i] = match; used.add(match); }
+// Returns a student array with null spacers inserted so that each paired student
+// appears at the same row as their partner in the residents/attendings columns
+// (which stay in their natural order). Unpaired students fill remaining slots.
+function alignStudentsToPartners(students, residents, attendings, pairings) {
+  // Build reverse map: partner row → student row
+  const partnerToStudent = new Map();
+  for (const [student, partners] of pairings) {
+    for (const p of partners) {
+      if (!partnerToStudent.has(p)) partnerToStudent.set(p, student);
+    }
   }
 
-  const unpaired = pool.filter(r => !used.has(r));
+  const totalRows = Math.max(students.length, residents.length);
+  const result    = new Array(totalRows).fill(null);
+  const used      = new Set();
+
+  // Place each paired student at their resident partner's row index.
+  for (let i = 0; i < residents.length; i++) {
+    const student = partnerToStudent.get(residents[i]);
+    if (student && !used.has(student)) {
+      result[i] = student;
+      used.add(student);
+    }
+  }
+
+  // For students paired only with an attending (not a resident), place them
+  // at the attending's row index if that slot is still free.
+  for (let i = 0; i < attendings.length; i++) {
+    const student = partnerToStudent.get(attendings[i]);
+    if (student && !used.has(student) && !result[i]) {
+      result[i] = student;
+      used.add(student);
+    }
+  }
+
+  // Fill remaining nulls with unpaired students in original order.
+  const unpaired = students.filter(s => !used.has(s));
   let ui = 0;
   for (let i = 0; i < result.length && ui < unpaired.length; i++) {
-    if (result[i] === null) { result[i] = unpaired[ui++]; }
+    if (!result[i]) { result[i] = unpaired[ui++]; }
   }
-  while (ui < unpaired.length) { result.push(unpaired[ui++]); }
+  while (ui < unpaired.length) result.push(unpaired[ui++]);
 
-  // Trim trailing nulls — no need for spacers beyond the last real card.
-  while (result.length && result[result.length - 1] === null) result.pop();
-
+  while (result.length && !result[result.length - 1]) result.pop();
   return result;
 }
 
@@ -378,16 +405,13 @@ function render() {
   const residents  = groups["resident"]  || [];
   const attendings = groups["attending"] || [];
 
-  const alignedResidents  = students.length
-    ? reorderForAlignment(students, residents,  pairings)
-    : residents;
-  const alignedAttendings = students.length
-    ? reorderForAlignment(students, attendings, pairings)
-    : attendings;
+  const alignedStudents = students.length
+    ? alignStudentsToPartners(students, residents, attendings, pairings)
+    : students;
 
-  renderColumn("shift.student",   students,          pairInfoMap);
-  renderColumn("shift.resident",  alignedResidents,  pairInfoMap);
-  renderColumn("shift.attending", alignedAttendings, pairInfoMap);
+  renderColumn("shift.student",   alignedStudents, pairInfoMap);
+  renderColumn("shift.resident",  residents,       pairInfoMap);
+  renderColumn("shift.attending", attendings,      pairInfoMap);
 }
 
 
