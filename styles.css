@@ -195,9 +195,9 @@ main {
 }
 
 .card__photo {
-  /* 55% of card width — large photo, name wraps to the right */
-  flex: 0 0 55%;
-  width: 55%;
+  /* 40% of card width keeps photos prominent without dominating card height */
+  flex: 0 0 40%;
+  width: 40%;
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--panel-2) center/cover no-repeat;
@@ -207,7 +207,7 @@ main {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 78px;
+  font-size: 54px;
   font-weight: 700;
 }
 .card__photo img {
@@ -264,7 +264,7 @@ main {
 
   .card { padding: 16px 18px; gap: 18px; }
 
-  .card__photo { font-size: 72px; }
+  .card__photo { font-size: 52px; }
 
   .card__firstname { font-size: 22px; }
   .card__lastname  { font-size: 18px; }
@@ -278,7 +278,7 @@ main {
 
   .card { padding: 20px 22px; gap: 22px; border-radius: 14px; }
 
-  .card__photo { font-size: 96px; }
+  .card__photo { font-size: 68px; }
 
   .card__firstname { font-size: 28px; }
   .card__lastname  { font-size: 22px; }
