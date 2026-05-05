@@ -129,7 +129,7 @@ function computeStudentPairings(students, residents, attendings) {
   } else if (n === 2 && s >= 2) {
     pairings.set(mainStudents[0], [mainSeniors[0]]);
     pairings.set(mainStudents[1], [mainSeniors[1]]);
-  } else if (n === 2 && s === 1 && juniors.length >= 1) {
+  } else if (n === 2 && s === 1) {
     const resStudent = mainStudents.find((s) => /-res\b/i.test(s.notes || "")) || mainStudents[0];
     const attStudent = mainStudents.find((s) => /-att\b/i.test(s.notes || "")) || mainStudents[1];
     pairings.set(resStudent, [mainSeniors[0]]);
