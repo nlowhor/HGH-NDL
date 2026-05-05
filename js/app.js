@@ -199,11 +199,8 @@ const PAIR_COLORS = ['#4ea3ff', '#7ee6c6', '#ffb057', '#c084fc', '#f87171'];
 
 function personCard(row, partners = [], pairColor = null) {
   const [photo, info] = personCardContent(row, partners);
-  const card = el("div", { class: "card" }, [photo, info]);
-  if (pairColor) {
-    card.style.borderColor = pairColor;
-    card.style.background = `color-mix(in srgb, var(--card) 90%, ${pairColor} 10%)`;
-  }
+  const card = el("div", { class: pairColor ? "card is-paired" : "card" }, [photo, info]);
+  if (pairColor) card.style.setProperty("--pair-color", pairColor);
   return card;
 }
 
@@ -282,25 +279,22 @@ function render() {
     groups["attending"] || [],
   );
 
-  // Build per-row display info (partners for label, shared color for 1:1 pairs).
+  // Assign a shared color to each pairing group (student + all their partners).
   const pairInfoMap = new Map();
   let colorIdx = 0;
   for (const [student, partners] of pairings) {
-    const resParts = partners.filter((p) => p.role === "resident");
-    if (resParts.length === 1) {
-      const color = PAIR_COLORS[colorIdx % PAIR_COLORS.length];
-      pairInfoMap.set(student, { partners, color });
-      pairInfoMap.set(resParts[0], { partners: [], color });
-      colorIdx++;
-    } else {
-      // Either-or or attending-paired: show text label, no color highlight.
-      pairInfoMap.set(student, { partners, color: null });
+    if (!partners.length) continue;
+    const color = PAIR_COLORS[colorIdx % PAIR_COLORS.length];
+    colorIdx++;
+    pairInfoMap.set(student, { partners, color });
+    for (const partner of partners) {
+      if (!pairInfoMap.has(partner)) pairInfoMap.set(partner, { partners: [], color });
     }
   }
 
   renderColumn("shift.student",   groups["student"]   || [], pairInfoMap);
   renderColumn("shift.resident",  groups["resident"]  || [], pairInfoMap);
-  renderColumn("shift.attending", groups["attending"] || []);
+  renderColumn("shift.attending", groups["attending"] || [], pairInfoMap);
 
   renderStatus();
 }

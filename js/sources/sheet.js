@@ -31,12 +31,17 @@ function normShift(v) {
 // unauthenticated thumbnail API that works for link-shared files.
 function rewritePhotoUrl(url) {
   if (!url) return "";
+  // drive.google.com/file/d/ID[/view]
   const m1 = url.match(/drive\.google\.com\/file\/d\/([^/?]+)/);
   if (m1) return `https://drive.google.com/thumbnail?id=${m1[1]}&sz=w400`;
+  // drive.google.com URLs with ?id= or &id= (open?id=, uc?id=, etc.)
   const m2 = url.match(/[?&]id=([^&]+)/);
   if (m2 && url.includes("drive.google.com")) {
     return `https://drive.google.com/thumbnail?id=${m2[1]}&sz=w400`;
   }
+  // lh3.googleusercontent.com/d/ID — requires auth; rewrite to thumbnail API
+  const m3 = url.match(/lh3\.googleusercontent\.com\/d\/([^/?]+)/);
+  if (m3) return `https://drive.google.com/thumbnail?id=${m3[1]}&sz=w400`;
   return url;
 }
 

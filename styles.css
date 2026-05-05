@@ -238,6 +238,11 @@ main {
   min-height: 40px;
 }
 
+.card.is-paired {
+  border-color: var(--pair-color);
+  background: color-mix(in srgb, var(--card) 90%, var(--pair-color) 10%);
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--border);
