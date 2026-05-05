@@ -32,8 +32,10 @@ function cacheBust(url) {
 }
 
 // Fetch a person-data tab published as CSV and return a Map:
-//   normalizeName(name) → { name, photo_url, title, notes }
-// Expected CSV columns: name, photo_url, title, notes (extras are ignored).
+//   normalizeName(schedule_name || name) → { display_name, photo_url, title, notes }
+// schedule_name (when present) is the name as it appears in the roster and is
+// used as the lookup key. name is the nicely formatted display name.
+// Attending tabs that only have name use it for both lookup and display.
 async function fetchPersonSheet(url) {
   if (!url) return new Map();
   try {
@@ -42,10 +44,12 @@ async function fetchPersonSheet(url) {
     const rows = parseCsv(await res.text());
     const map = new Map();
     for (const r of rows) {
-      const name = (r.name || '').trim();
-      if (!name) continue;
-      map.set(normalizeName(name), {
-        name,
+      const displayName   = (r.name          || '').trim();
+      const scheduleName  = (r.schedule_name || '').trim();
+      if (!displayName) continue;
+      const lookupKey = normalizeName(scheduleName || displayName);
+      map.set(lookupKey, {
+        display_name: displayName,
         photo_url: (r.photo_url || '').trim(),
         title:     (r.title     || '').trim(),
         notes:     (r.notes     || '').trim(),
@@ -140,8 +144,9 @@ export async function loadAllRosters({ demoMode = false } = {}) {
       const lookupName = (r.matched_name || '').trim() || r.name;
       const person = maps[r.role]?.get(normalizeName(lookupName));
       if (!person) continue;
-      if (person.photo_url) r.photo_url = person.photo_url;
-      if (person.title)     r.title     = person.title;
+      if (person.display_name) r.matched_name = person.display_name;
+      if (person.photo_url)    r.photo_url    = person.photo_url;
+      if (person.title)        r.title        = person.title;
     }
   }
 
