@@ -53,6 +53,27 @@ function pgyLabel(pgyStr) {
   return m ? `R${m[1]}` : '';
 }
 
+// Convert a 0-based column index to a spreadsheet letter (A, B, …, AA, …).
+function colLetter(idx) {
+  let r = '', i = idx + 1;
+  while (i > 0) { i--; r = String.fromCharCode(65 + (i % 26)) + r; i = Math.floor(i / 26); }
+  return r;
+}
+
+// Ensure a column exists in the roster header; add it if missing.
+async function ensureRosterColumn(sheets, spreadsheetId, headers, colName) {
+  let idx = headers.indexOf(colName);
+  if (idx >= 0) return idx;
+  idx = headers.length;
+  headers.push(colName);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${ROSTER_TAB}!1:1`,
+    valueInputOption: 'RAW', requestBody: { values: [headers] },
+  });
+  console.log(`Added "${colName}" column to ${ROSTER_TAB} header.`);
+  return idx;
+}
+
 // ── Medrez API calls ──────────────────────────────────────────────────────────
 
 async function fetchMedrezData() {
@@ -176,21 +197,27 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
   const nameCol        = col('name');
   const titleCol       = headers.indexOf('title');
   const notesCol       = headers.indexOf('notes');
-  const matchedNameCol = headers.indexOf('matched_name');
+  const matchedNameCol  = headers.indexOf('matched_name');
+  const matchedPhotoCol = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_photo');
 
-  // Read all rows; preserve matched_name overrides already in the sheet.
+  // Read all rows; preserve matched_name and matched_photo overrides already in the sheet.
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows   = allRes.data.values || [];
 
-  const toDelete     = [];
-  const savedMatched = {}; // normalised schedule name → matched_name formula/value
+  const toDelete      = [];
+  const savedMatched  = {}; // schedule name (lower) → matched_name value
+  const savedPhotos   = {}; // schedule name (lower) → matched_photo value
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === RESIDENT_ROLE) {
       toDelete.push(i + 1);
+      const key = String(rows[i][nameCol] || '').trim().toLowerCase();
       if (matchedNameCol >= 0) {
-        const mn  = String(rows[i][matchedNameCol] || '').trim();
-        const key = String(rows[i][nameCol] || '').trim().toLowerCase();
+        const mn = String(rows[i][matchedNameCol] || '').trim();
         if (key && mn) savedMatched[key] = mn;
+      }
+      if (matchedPhotoCol >= 0) {
+        const mp = String(rows[i][matchedPhotoCol] || '').trim();
+        if (key && mp) savedPhotos[key] = mp;
       }
     }
   }
@@ -216,22 +243,49 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
 
   const width   = headers.length;
   const newRows = entries.map(e => {
+    const key = e.name.toLowerCase();
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = RESIDENT_ROLE;
     row[nameCol]  = e.name;
-    if (titleCol >= 0)       row[titleCol]       = e.title || '';
-    if (notesCol >= 0)       row[notesCol]       = e.notes || '';
-    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[e.name.toLowerCase()] || '';
+    if (titleCol >= 0)        row[titleCol]        = e.title || '';
+    if (notesCol >= 0)        row[notesCol]         = e.notes || '';
+    if (matchedNameCol >= 0)  row[matchedNameCol]   = savedMatched[key] || '';
+    if (matchedPhotoCol >= 0) row[matchedPhotoCol]  = savedPhotos[key]  || '';
     return row;
   });
+
+  // Determine where new rows will land so we can write formulas into the right cells.
+  const preAppendRows = rows.length - toDelete.length;
 
   await sheets.spreadsheets.values.append({
     spreadsheetId,
     range: ROSTER_TAB,
     valueInputOption: 'RAW',
     requestBody: { values: newRows },
+  });
+
+  // Write matched_photo formulas for any new rows that didn't have a saved value.
+  // Formula: look up photo_url (col B) from the appropriate person tab via schedule_name (col E).
+  const rc = colLetter(roleCol), nc = colLetter(nameCol), mc = colLetter(matchedPhotoCol);
+  const formulaRows = [];
+  const formulaStartRow = preAppendRows + 1; // 1-based sheet row of first new entry
+  for (let i = 0; i < newRows.length; i++) {
+    const key = entries[i].name.toLowerCase();
+    if (savedPhotos[key]) { formulaRows.push([savedPhotos[key]]); continue; }
+    const r = formulaStartRow + i;
+    formulaRows.push([
+      `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$B:$B,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
+      `IF(${rc}${r}="student",IFERROR(INDEX(students!$B:$B,MATCH(${nc}${r},students!$E:$E,0)),""),` +
+      `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$B:$B,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
+    ]);
+  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${mc}${formulaStartRow}:${mc}${formulaStartRow + newRows.length - 1}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: formulaRows },
   });
 
   console.log(`Appended ${newRows.length} resident shift rows.`);

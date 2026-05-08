@@ -17,6 +17,12 @@ function isBackupRow(r) {
   return /backup/i.test(r.notes || "");
 }
 
+// Names (case-insensitive word match) that should never appear in the roster.
+const EXCLUDED_NAME_WORDS = ["nelson"];
+function isExcludedName(r) {
+  return r.name.toLowerCase().split(/\s+/).some(w => EXCLUDED_NAME_WORDS.includes(w));
+}
+
 // Sort words so "James Nelson" and "Nelson James" both normalise the same way.
 function normalizeName(s) {
   return String(s || '').toLowerCase().trim()
@@ -127,7 +133,8 @@ export async function loadAllRosters({ demoMode = false } = {}) {
 
   const rows = dedupe(buckets.flat())
     .filter((r) => !isOffsite(r))
-    .filter((r) => !isBackupRow(r));
+    .filter((r) => !isBackupRow(r))
+    .filter((r) => !isExcludedName(r));
 
   // Merge per-person data (photo_url, title) from dedicated role tabs when URLs
   // are configured. Person-tab values are authoritative: they override whatever
