@@ -31,6 +31,9 @@ function normShift(v) {
 // unauthenticated thumbnail API that works for link-shared files.
 function rewritePhotoUrl(url) {
   if (!url) return "";
+  // github.com/USER/REPO/blob/BRANCH/path → raw.githubusercontent.com (serves the actual file)
+  const mg = url.match(/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)/);
+  if (mg) return `https://raw.githubusercontent.com/${mg[1]}/${mg[2]}/${mg[3]}`;
   // drive.google.com/file/d/ID[/view]
   const m1 = url.match(/drive\.google\.com\/file\/d\/([^/?]+)/);
   if (m1) return `https://drive.google.com/thumbnail?id=${m1[1]}&sz=w400`;
