@@ -197,7 +197,7 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
   const nameCol        = col('name');
   const titleCol       = headers.indexOf('title');
   const notesCol       = headers.indexOf('notes');
-  const matchedNameCol  = headers.indexOf('matched_name');
+  const matchedNameCol  = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_name');
   const matchedPhotoCol = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_photo');
 
   // Read all rows; preserve matched_name and matched_photo overrides already in the sheet.
@@ -266,26 +266,33 @@ async function writeResidentsToSheet(sheets, spreadsheetId, entries) {
     requestBody: { values: newRows },
   });
 
-  // Write matched_photo formulas for any new rows that didn't have a saved value.
-  // Formula: look up photo_url (col B) from the appropriate person tab via schedule_name (col E).
-  const rc = colLetter(roleCol), nc = colLetter(nameCol), mc = colLetter(matchedPhotoCol);
-  const formulaRows = [];
-  const formulaStartRow = preAppendRows + 1; // 1-based sheet row of first new entry
+  // Write matched_name and matched_photo formulas for all newly appended rows.
+  const rc = colLetter(roleCol), nc = colLetter(nameCol);
+  const mnCol = colLetter(matchedNameCol), mpCol = colLetter(matchedPhotoCol);
+  const startRow = preAppendRows + 1; // 1-based sheet row of first new entry
+  const mnFormulas = [], mpFormulas = [];
   for (let i = 0; i < newRows.length; i++) {
-    const key = entries[i].name.toLowerCase();
-    if (savedPhotos[key]) { formulaRows.push([savedPhotos[key]]); continue; }
-    const r = formulaStartRow + i;
-    formulaRows.push([
+    const r = startRow + i;
+    mnFormulas.push([
+      `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$A:$A,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
+      `IF(${rc}${r}="student",IFERROR(INDEX(students!$A:$A,MATCH(${nc}${r},students!$E:$E,0)),""),` +
+      `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$A:$A,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
+    ]);
+    mpFormulas.push([
       `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$B:$B,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
       `IF(${rc}${r}="student",IFERROR(INDEX(students!$B:$B,MATCH(${nc}${r},students!$E:$E,0)),""),` +
       `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$B:$B,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
     ]);
   }
-  await sheets.spreadsheets.values.update({
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
-    range: `${mc}${formulaStartRow}:${mc}${formulaStartRow + newRows.length - 1}`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: formulaRows },
+    requestBody: {
+      valueInputOption: 'USER_ENTERED',
+      data: [
+        { range: `${mnCol}${startRow}:${mnCol}${startRow + newRows.length - 1}`, values: mnFormulas },
+        { range: `${mpCol}${startRow}:${mpCol}${startRow + newRows.length - 1}`, values: mpFormulas },
+      ],
+    },
   });
 
   console.log(`Appended ${newRows.length} resident shift rows.`);

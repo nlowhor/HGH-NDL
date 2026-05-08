@@ -273,7 +273,7 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
   const shiftCol       = col('shift');
   const nameCol        = col('name');
   const notesCol        = headers.indexOf('notes');
-  const matchedNameCol  = headers.indexOf('matched_name');
+  const matchedNameCol  = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_name');
   const matchedPhotoCol = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_photo');
 
   // Read entire sheet; preserve non-student rows and any saved matched_name/matched_photo values.
@@ -332,27 +332,37 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
     requestBody: { values: allNewRows },
   });
 
-  // Write matched_photo formulas for any new rows that didn't have a saved value.
-  if (matchedPhotoCol >= 0 && newRows.length) {
-    const startRow    = kept.length + 1; // 1-based sheet row of first student entry
-    const rc = colLetter(roleCol), nc = colLetter(nameCol), mc = colLetter(matchedPhotoCol);
-    const formulaRows = [];
-    for (let i = 0; i < newRows.length; i++) {
-      const key = entries[i].name.toLowerCase();
-      if (savedPhotos[key]) { formulaRows.push([savedPhotos[key]]); continue; }
-      const r = startRow + i;
-      formulaRows.push([
+  // Write matched_name and matched_photo formulas for every non-header row.
+  // Covers all roles (students, residents, attendings) since we just rewrote the sheet.
+  const totalDataRows = allNewRows.length - 1; // exclude header
+  if (totalDataRows > 0) {
+    const rc = colLetter(roleCol), nc = colLetter(nameCol);
+    const mnFormulas = [], mpFormulas = [];
+    for (let i = 0; i < totalDataRows; i++) {
+      const r = i + 2; // 1-based sheet row (row 1 = header)
+      mnFormulas.push([
+        `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$A:$A,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
+        `IF(${rc}${r}="student",IFERROR(INDEX(students!$A:$A,MATCH(${nc}${r},students!$E:$E,0)),""),` +
+        `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$A:$A,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
+      ]);
+      mpFormulas.push([
         `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$B:$B,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
         `IF(${rc}${r}="student",IFERROR(INDEX(students!$B:$B,MATCH(${nc}${r},students!$E:$E,0)),""),` +
         `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$B:$B,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
       ]);
     }
-    await sheets.spreadsheets.values.update({
+    const mnCol = colLetter(matchedNameCol), mpCol = colLetter(matchedPhotoCol);
+    await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId,
-      range: `${mc}${startRow}:${mc}${startRow + newRows.length - 1}`,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: formulaRows },
+      requestBody: {
+        valueInputOption: 'USER_ENTERED',
+        data: [
+          { range: `${mnCol}2:${mnCol}${totalDataRows + 1}`, values: mnFormulas },
+          { range: `${mpCol}2:${mpCol}${totalDataRows + 1}`, values: mpFormulas },
+        ],
+      },
     });
+    console.log(`Wrote matched_name and matched_photo formulas for ${totalDataRows} row(s).`);
   }
 
   console.log(`Wrote ${newRows.length} student row(s).`);
