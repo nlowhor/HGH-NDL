@@ -83,7 +83,8 @@ export function normalizeRows(rows) {
     const name = (r.name || "").trim();
     const date = (r.date || "").trim();
     if (!role || !shift || !name || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-    const rawPhoto = (r.photo_url || r["photo url"] || r.photo || r.headshot || r.image || "").trim();
+    // matched_photo (person-tab formula) takes priority over the sync-written photo_url.
+    const rawPhoto = (r.matched_photo || r["matched photo"] || r.photo_url || r["photo url"] || r.photo || r.headshot || r.image || "").trim();
     const photo = rewritePhotoUrl(rawPhoto);
     if (rawPhoto && !photo) console.warn("[sheet] photo URL dropped by rewriter:", rawPhoto);
     out.push({

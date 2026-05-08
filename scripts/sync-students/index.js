@@ -92,6 +92,28 @@ async function writeMatchedNameFormulas(sheets, spreadsheetId, roleCol, nameCol,
   console.log(`Wrote ${count} matched_name formula(s) at rows ${startRow}–${startRow + count - 1}.`);
 }
 
+// Write IFERROR(INDEX/MATCH) formulas into the matched_photo column for a run of rows.
+// Person tabs must have photo_url in column B and schedule_name in column E.
+async function writeMatchedPhotoFormulas(sheets, spreadsheetId, roleCol, nameCol, matchedPhotoCol, startRow, count) {
+  if (count === 0) return;
+  const rc = colLetter(roleCol), nc = colLetter(nameCol), mc = colLetter(matchedPhotoCol);
+  const vals = [];
+  for (let r = startRow; r < startRow + count; r++) {
+    vals.push([
+      `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$B:$B,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
+      `IF(${rc}${r}="student",IFERROR(INDEX(students!$B:$B,MATCH(${nc}${r},students!$E:$E,0)),""),` +
+      `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$B:$B,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
+    ]);
+  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range:            `${mc}${startRow}:${mc}${startRow + count - 1}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody:      { values: vals },
+  });
+  console.log(`Wrote ${count} matched_photo formula(s) at rows ${startRow}–${startRow + count - 1}.`);
+}
+
 const SHIFT_LABEL_MAP = {
   'RN DAY':     { shift: 'day',     notes: 'RN Day' },
   'DAY-BUP':    { shift: 'day',     notes: 'Day-BUP' },
@@ -532,8 +554,9 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
   const titleCol = headers.indexOf('title');
   const photoCol = headers.indexOf('photo_url');
   const notesCol = headers.indexOf('notes');
-  // Ensure matched_name column exists (adds it to header if missing).
-  const matchedNameCol = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_name');
+  // Ensure matched_name and matched_photo columns exist (adds them to header if missing).
+  const matchedNameCol  = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_name');
+  const matchedPhotoCol = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_photo');
 
   // Read all rows and find student row indices to delete.
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
@@ -596,9 +619,13 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
     requestBody: { values: newRows },
   });
 
-  // Write VLOOKUP formulas into matched_name for the newly appended rows.
+  // Write formulas into matched_name and matched_photo for the newly appended rows.
   await writeMatchedNameFormulas(
     sheets, spreadsheetId, roleCol, nameCol, matchedNameCol,
+    preAppendRows + 1, newRows.length,
+  );
+  await writeMatchedPhotoFormulas(
+    sheets, spreadsheetId, roleCol, nameCol, matchedPhotoCol,
     preAppendRows + 1, newRows.length,
   );
 
