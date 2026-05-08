@@ -88,6 +88,27 @@ function yearFromTabName(name) {
   return null;
 }
 
+// Convert a 0-based column index to a spreadsheet letter (A, B, …, AA, …).
+function colLetter(idx) {
+  let r = '', i = idx + 1;
+  while (i > 0) { i--; r = String.fromCharCode(65 + (i % 26)) + r; i = Math.floor(i / 26); }
+  return r;
+}
+
+// Ensure a column exists in the roster header; add it if missing.
+async function ensureRosterColumn(sheets, spreadsheetId, headers, colName) {
+  let idx = headers.indexOf(colName);
+  if (idx >= 0) return idx;
+  idx = headers.length;
+  headers.push(colName);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${ROSTER_TAB}!1:1`,
+    valueInputOption: 'RAW', requestBody: { values: [headers] },
+  });
+  console.log(`Added "${colName}" column to ${ROSTER_TAB} header.`);
+  return idx;
+}
+
 // Minimal CSV parser — handles quoted fields with embedded commas/newlines.
 function parseCsv(text) {
   const rows = [];
@@ -251,22 +272,28 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
   const dateCol        = col('date');
   const shiftCol       = col('shift');
   const nameCol        = col('name');
-  const notesCol       = headers.indexOf('notes');
-  const matchedNameCol = headers.indexOf('matched_name');
+  const notesCol        = headers.indexOf('notes');
+  const matchedNameCol  = headers.indexOf('matched_name');
+  const matchedPhotoCol = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_photo');
 
-  // Read entire sheet; preserve non-student rows and any saved matched_name values.
+  // Read entire sheet; preserve non-student rows and any saved matched_name/matched_photo values.
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
   const rows   = allRes.data.values || [];
   const kept   = rows.slice(0, 1); // header always kept
   let removed  = 0;
-  const savedMatched = {}; // schedule name (lower) → matched_name formula/value
+  const savedMatched = {}; // schedule name (lower) → matched_name value
+  const savedPhotos  = {}; // schedule name (lower) → matched_photo value
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) {
       removed++;
+      const key = String(rows[i][nameCol] || '').trim().toLowerCase();
       if (matchedNameCol >= 0) {
-        const mn  = String(rows[i][matchedNameCol] || '').trim();
-        const key = String(rows[i][nameCol] || '').trim().toLowerCase();
+        const mn = String(rows[i][matchedNameCol] || '').trim();
         if (key && mn) savedMatched[key] = mn;
+      }
+      if (matchedPhotoCol >= 0) {
+        const mp = String(rows[i][matchedPhotoCol] || '').trim();
+        if (key && mp) savedPhotos[key] = mp;
       }
       continue;
     }
@@ -286,13 +313,15 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
 
   const width   = headers.length;
   const newRows = entries.map(e => {
+    const key = e.name.toLowerCase();
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = STUDENT_ROLE;
     row[nameCol]  = e.name;
-    if (notesCol >= 0)       row[notesCol]       = e.notes || '';
-    if (matchedNameCol >= 0) row[matchedNameCol] = savedMatched[e.name.toLowerCase()] || '';
+    if (notesCol >= 0)        row[notesCol]        = e.notes || '';
+    if (matchedNameCol >= 0)  row[matchedNameCol]  = savedMatched[key] || '';
+    if (matchedPhotoCol >= 0) row[matchedPhotoCol] = savedPhotos[key]  || '';
     return row;
   });
 
@@ -302,6 +331,29 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
     spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
     requestBody: { values: allNewRows },
   });
+
+  // Write matched_photo formulas for any new rows that didn't have a saved value.
+  if (matchedPhotoCol >= 0 && newRows.length) {
+    const startRow    = kept.length + 1; // 1-based sheet row of first student entry
+    const rc = colLetter(roleCol), nc = colLetter(nameCol), mc = colLetter(matchedPhotoCol);
+    const formulaRows = [];
+    for (let i = 0; i < newRows.length; i++) {
+      const key = entries[i].name.toLowerCase();
+      if (savedPhotos[key]) { formulaRows.push([savedPhotos[key]]); continue; }
+      const r = startRow + i;
+      formulaRows.push([
+        `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$B:$B,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
+        `IF(${rc}${r}="student",IFERROR(INDEX(students!$B:$B,MATCH(${nc}${r},students!$E:$E,0)),""),` +
+        `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$B:$B,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
+      ]);
+    }
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${mc}${startRow}:${mc}${startRow + newRows.length - 1}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: formulaRows },
+    });
+  }
 
   console.log(`Wrote ${newRows.length} student row(s).`);
   return newRows.length;
