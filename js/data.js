@@ -14,6 +14,15 @@ function isBackupRow(r) {
   return /backup/i.test(r.notes || "");
 }
 
+// Names (case-insensitive word match) that should never appear in the roster.
+const EXCLUDED_NAME_WORDS = ["nelson"];
+function isExcludedName(r) {
+  const nameLower = r.name.toLowerCase();
+  return EXCLUDED_NAME_WORDS.some((word) =>
+    nameLower.split(/\s+/).includes(word)
+  );
+}
+
 import { config } from "./config.js";
 import { fetchSheetRoster, fetchStudentDirectory } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
@@ -86,7 +95,8 @@ export async function loadAllRosters({ demoMode = false } = {}) {
 
   const rows = dedupe(buckets.flat())
     .filter((r) => !isOffsite(r))
-    .filter((r) => !isBackupRow(r));
+    .filter((r) => !isBackupRow(r))
+    .filter((r) => !isExcludedName(r));
 
   // Enrich student rows with photos from the student directory tab.
   if (src.studentsCsvUrl) {
