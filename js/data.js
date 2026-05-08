@@ -152,7 +152,7 @@ export async function loadAllRosters({ demoMode = false } = {}) {
       const person = maps[r.role]?.get(normalizeName(lookupName));
       if (!person) continue;
       if (person.display_name) r.matched_name = person.display_name;
-      if (person.photo_url)    r.photo_url    = person.photo_url;
+      if (!r.photo_url && person.photo_url) r.photo_url = person.photo_url;
       if (person.title)        r.title        = person.title;
     }
   }
