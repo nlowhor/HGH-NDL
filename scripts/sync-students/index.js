@@ -272,56 +272,67 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
   const dateCol        = col('date');
   const shiftCol       = col('shift');
   const nameCol        = col('name');
-  const notesCol        = headers.indexOf('notes');
+  const notesCol       = headers.indexOf('notes');
   const matchedNameCol  = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_name');
   const matchedPhotoCol = await ensureRosterColumn(sheets, spreadsheetId, headers, 'matched_photo');
 
-  // Read entire sheet; preserve non-student rows and any saved matched_name/matched_photo values.
-  const allRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: ROSTER_TAB });
-  const rows   = allRes.data.values || [];
-  const kept   = rows.slice(0, 1); // header always kept
-  let removed  = 0;
-  const savedMatched = {}; // schedule name (lower) → matched_name value
-  const savedPhotos  = {}; // schedule name (lower) → matched_photo value
+  // Read with FORMULA render so we can tell manually-typed cells (no leading "=") apart
+  // from formula cells. This lets us preserve manual overrides across syncs.
+  const allRes = await sheets.spreadsheets.values.get({
+    spreadsheetId, range: ROSTER_TAB, valueRenderOption: 'FORMULA',
+  });
+  const rows = allRes.data.values || [];
+  const kept = rows.slice(0, 1); // header always kept
+  let removed = 0;
+
+  // Student rows being removed: save manually-typed matched values keyed by schedule name.
+  const savedMatched = {}; // schedule name (lower) → manually-typed matched_name
+  const savedPhotos  = {}; // schedule name (lower) → manually-typed matched_photo
+
+  // Non-student rows being kept: save manually-typed matched values keyed by index in 'kept'.
+  const keptManualMN = {}; // 1-based index in kept → value or null
+  const keptManualMP = {}; // 1-based index in kept → value or null
+
   for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE) {
+    const isStudent = String(rows[i][roleCol] || '').trim().toLowerCase() === STUDENT_ROLE;
+
+    if (isStudent) {
       removed++;
       const key = String(rows[i][nameCol] || '').trim().toLowerCase();
       if (matchedNameCol >= 0) {
         const mn = String(rows[i][matchedNameCol] || '').trim();
-        if (key && mn) savedMatched[key] = mn;
+        if (key && mn && !mn.startsWith('=')) savedMatched[key] = mn;
       }
       if (matchedPhotoCol >= 0) {
         const mp = String(rows[i][matchedPhotoCol] || '').trim();
-        if (key && mp) savedPhotos[key] = mp;
+        if (key && mp && !mp.startsWith('=')) savedPhotos[key] = mp;
       }
       continue;
+    }
+
+    // Non-student row: record any manually-typed matched values before keeping it.
+    const keptIdx = kept.length; // 1-based (kept[0] is the header)
+    if (matchedNameCol >= 0) {
+      const mn = String(rows[i][matchedNameCol] || '').trim();
+      keptManualMN[keptIdx] = (mn && !mn.startsWith('=')) ? mn : null;
+    }
+    if (matchedPhotoCol >= 0) {
+      const mp = String(rows[i][matchedPhotoCol] || '').trim();
+      keptManualMP[keptIdx] = (mp && !mp.startsWith('=')) ? mp : null;
     }
     kept.push(rows[i]);
   }
   console.log(`Removed ${removed} existing student row(s).`);
 
-  if (!entries.length) {
-    await sheets.spreadsheets.values.clear({ spreadsheetId, range: ROSTER_TAB });
-    await sheets.spreadsheets.values.update({
-      spreadsheetId, range: `${ROSTER_TAB}!A1`, valueInputOption: 'RAW',
-      requestBody: { values: kept },
-    });
-    console.log('No student entries to write.');
-    return 0;
-  }
-
   const width   = headers.length;
   const newRows = entries.map(e => {
-    const key = e.name.toLowerCase();
     const row = new Array(width).fill('');
     row[dateCol]  = e.date;
     row[shiftCol] = e.shift;
     row[roleCol]  = STUDENT_ROLE;
     row[nameCol]  = e.name;
-    if (notesCol >= 0)        row[notesCol]        = e.notes || '';
-    if (matchedNameCol >= 0)  row[matchedNameCol]  = savedMatched[key] || '';
-    if (matchedPhotoCol >= 0) row[matchedPhotoCol] = savedPhotos[key]  || '';
+    if (notesCol >= 0) row[notesCol] = e.notes || '';
+    // matched_name and matched_photo are written by the batchUpdate below
     return row;
   });
 
@@ -332,37 +343,54 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
     requestBody: { values: allNewRows },
   });
 
-  // Write matched_name and matched_photo formulas for every non-header row.
-  // Covers all roles (students, residents, attendings) since we just rewrote the sheet.
-  const totalDataRows = allNewRows.length - 1; // exclude header
+  if (!entries.length) console.log('No student entries to write.');
+
+  // Write matched_name and matched_photo for every non-header row.
+  // For each cell: if a manually-typed override was saved, write that plain string;
+  // otherwise write the INDEX/MATCH formula. USER_ENTERED handles both correctly.
+  const totalDataRows = allNewRows.length - 1;
   if (totalDataRows > 0) {
     const rc = colLetter(roleCol), nc = colLetter(nameCol);
-    const mnFormulas = [], mpFormulas = [];
+    const mnCol = colLetter(matchedNameCol), mpCol = colLetter(matchedPhotoCol);
+    const keptDataLen = kept.length - 1; // number of non-header kept rows
+    const mnValues = [], mpValues = [];
+
     for (let i = 0; i < totalDataRows; i++) {
       const r = i + 2; // 1-based sheet row (row 1 = header)
-      mnFormulas.push([
+      const mnFormula =
         `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$A:$A,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
         `IF(${rc}${r}="student",IFERROR(INDEX(students!$A:$A,MATCH(${nc}${r},students!$E:$E,0)),""),` +
         `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$A:$A,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
-      ]);
-      mpFormulas.push([
+      const mpFormula =
         `=IFERROR(IF(${rc}${r}="resident",IFERROR(INDEX(residents!$B:$B,MATCH(${nc}${r},residents!$E:$E,0)),""),` +
         `IF(${rc}${r}="student",IFERROR(INDEX(students!$B:$B,MATCH(${nc}${r},students!$E:$E,0)),""),` +
         `IF(${rc}${r}="attending",IFERROR(INDEX(attendings!$B:$B,MATCH(${nc}${r},attendings!$E:$E,0)),""),""))),"")`
-      ]);
+
+      let mnValue, mpValue;
+      if (i < keptDataLen) {
+        const keptIdx = i + 1;
+        mnValue = keptManualMN[keptIdx] || mnFormula;
+        mpValue = keptManualMP[keptIdx] || mpFormula;
+      } else {
+        const key = String(newRows[i - keptDataLen][nameCol] || '').toLowerCase();
+        mnValue = savedMatched[key] || mnFormula;
+        mpValue = savedPhotos[key]  || mpFormula;
+      }
+      mnValues.push([mnValue]);
+      mpValues.push([mpValue]);
     }
-    const mnCol = colLetter(matchedNameCol), mpCol = colLetter(matchedPhotoCol);
+
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId,
       requestBody: {
         valueInputOption: 'USER_ENTERED',
         data: [
-          { range: `${mnCol}2:${mnCol}${totalDataRows + 1}`, values: mnFormulas },
-          { range: `${mpCol}2:${mpCol}${totalDataRows + 1}`, values: mpFormulas },
+          { range: `${mnCol}2:${mnCol}${totalDataRows + 1}`, values: mnValues },
+          { range: `${mpCol}2:${mpCol}${totalDataRows + 1}`, values: mpValues },
         ],
       },
     });
-    console.log(`Wrote matched_name and matched_photo formulas for ${totalDataRows} row(s).`);
+    console.log(`Wrote matched_name and matched_photo for ${totalDataRows} row(s).`);
   }
 
   console.log(`Wrote ${newRows.length} student row(s).`);
