@@ -357,11 +357,38 @@ main {
 /* ── Mobile (phone portrait) ─────────────────────────────────────────────────── */
 
 @media (max-width: 500px) {
-  .roles { grid-template-columns: 1fr; gap: 16px; }
+  main { padding: 8px; }
 
-  .card__photo { font-size: 38px; }
-  .card__firstname { font-size: 22px; }
-  .card__lastname  { font-size: 17px; }
+  .shift-section { padding: 8px 8px 12px; }
+
+  /* Header: let the nav wrap onto its own line below the date/shift info */
+  .shift-section__head {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+  }
+  .shift-section__meta { font-size: 15px; }
+  .shift-section__label { font-size: 11px; }
+
+  /* Nav row spans full width; buttons share the line, datetime drops below */
+  .shift-section__head-right { width: 100%; margin-left: 0; }
+  .shift-nav { flex-wrap: wrap; gap: 4px; }
+  .shift-nav__btn { flex: 1; padding: 5px 6px; font-size: 12px; }
+  .shift-nav__when { width: 100%; font-size: 12px; padding: 5px 8px; }
+
+  /* Role columns → single column, tighter spacing */
+  .roles { grid-template-columns: 1fr; gap: 10px; }
+  .role-header { font-size: 14px; margin-bottom: 6px; }
+
+  /* More compact cards */
+  .cards { gap: 6px; }
+  .card { padding: 5px 10px; gap: 10px; }
+  .card__photo { flex: 0 0 30%; width: 30%; font-size: 32px; }
+  .card__firstname { font-size: 16px; }
+  .card__lastname  { font-size: 13px; }
+  .card__level     { font-size: 13px; }
+  .card__shift     { font-size: 12px; }
 }
 
 /* ── Misc ────────────────────────────────────────────────────────────────────── */
