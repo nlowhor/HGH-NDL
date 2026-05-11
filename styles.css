@@ -376,6 +376,7 @@ main {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 4px;
+    width: 100%;
   }
   #current-btn     { order: 1; }
   #upnext-btn      { order: 2; }
@@ -386,7 +387,7 @@ main {
 
   /* Keep 3 columns — tighter gaps and headers */
   .roles { column-gap: 6px; }
-  .role-header { font-size: 11px; margin-bottom: 5px; letter-spacing: 0; }
+  .role-header { font-size: 11px; margin-bottom: 5px; letter-spacing: 0; text-align: center; }
 
   /* Cards: vertical layout, tall enough to show all info including pairing */
   .cards { gap: 5px; }
