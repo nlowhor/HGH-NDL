@@ -370,15 +370,25 @@ main {
   .shift-section__meta  { font-size: 15px; }
   .shift-section__label { font-size: 11px; }
   .shift-section__head-right { width: 100%; margin-left: 0; }
-  .shift-nav { flex-wrap: wrap; gap: 4px; }
-  .shift-nav__btn { flex: 1; padding: 5px 6px; font-size: 12px; }
-  .shift-nav__when { width: 100%; font-size: 12px; padding: 5px 8px; }
 
-  /* Keep 3 columns — narrower gaps and headers */
+  /* Nav: 2-column grid — Current/Up Next on row 1, Prev/Next on row 2, datetime full-width on row 3 */
+  .shift-nav {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+  #current-btn      { order: 1; }
+  #upnext-btn       { order: 2; }
+  #prev-shift-btn   { order: 3; }
+  #next-shift-btn   { order: 4; }
+  .shift-nav__when  { order: 5; grid-column: 1 / -1; font-size: 12px; padding: 5px 8px; }
+  .shift-nav__btn   { padding: 5px 6px; font-size: 12px; }
+
+  /* Keep 3 columns — tighter gaps and headers */
   .roles { column-gap: 6px; }
   .role-header { font-size: 11px; margin-bottom: 5px; letter-spacing: 0; }
 
-  /* Cards: stack photo above name so they fit in a narrow column */
+  /* Cards: vertical layout, fixed height so all cards (including spacers) align */
   .cards { gap: 5px; }
   .card {
     flex-direction: column;
@@ -386,7 +396,10 @@ main {
     text-align: center;
     padding: 6px 4px;
     gap: 4px;
+    height: 148px;
+    overflow: hidden;
   }
+  .card--mini { height: auto; }
   .card__photo {
     flex: 0 0 auto;
     width: 65%;
