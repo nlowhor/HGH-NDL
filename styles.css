@@ -371,46 +371,60 @@ main {
   .shift-section__label { font-size: 11px; }
   .shift-section__head-right { width: 100%; margin-left: 0; }
 
-  /* Nav: 2-column grid — Current/Up Next on row 1, Prev/Next on row 2, datetime full-width on row 3 */
+  /* Nav: 2-column grid — Current/Up Next row 1, Prev/Next row 2, datetime full-width row 3 */
   .shift-nav {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 4px;
   }
-  #current-btn      { order: 1; }
-  #upnext-btn       { order: 2; }
-  #prev-shift-btn   { order: 3; }
-  #next-shift-btn   { order: 4; }
-  .shift-nav__when  { order: 5; grid-column: 1 / -1; font-size: 12px; padding: 5px 8px; }
-  .shift-nav__btn   { padding: 5px 6px; font-size: 12px; }
+  #current-btn     { order: 1; }
+  #upnext-btn      { order: 2; }
+  #prev-shift-btn  { order: 3; }
+  #next-shift-btn  { order: 4; }
+  .shift-nav__when { order: 5; grid-column: 1 / -1; font-size: 13px; padding: 12px 8px; }
+  .shift-nav__btn  { min-height: 48px; padding: 12px 6px; font-size: 13px; }
 
   /* Keep 3 columns — tighter gaps and headers */
   .roles { column-gap: 6px; }
   .role-header { font-size: 11px; margin-bottom: 5px; letter-spacing: 0; }
 
-  /* Cards: vertical layout, fixed height so all cards (including spacers) align */
+  /* Cards: vertical layout, tall enough to show all info including pairing */
   .cards { gap: 5px; }
   .card {
     flex-direction: column;
     align-items: center;
     text-align: center;
-    padding: 6px 4px;
+    padding: 8px 4px;
     gap: 4px;
-    height: 148px;
+    height: 220px;
     overflow: hidden;
   }
-  .card--mini { height: auto; }
-  .card__photo {
-    flex: 0 0 auto;
-    width: 65%;
-    font-size: 26px;
+  .card__photo { flex: 0 0 auto; width: 70%; font-size: 28px; }
+  .card__info  { width: 100%; gap: 2px; }
+  .card__firstname { font-size: 13px; }
+  .card__lastname  { font-size: 12px; }
+  .card__level     { font-size: 12px; margin-top: 0; }
+  .card__shift     { font-size: 11px; margin-top: 0; }
+  .card__pair      { font-size: 11px; }
+
+  /* Overflow row: stack cards in a column instead of side-by-side,
+     and restyle mini cards to match the regular vertical card layout */
+  .cards__overflow-row { flex-direction: column; gap: 5px; }
+  .card--mini {
+    flex: none;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 8px 4px;
+    gap: 4px;
+    height: 220px;
+    overflow: hidden;
   }
-  .card__info { width: 100%; gap: 1px; }
-  .card__firstname { font-size: 12px; }
-  .card__lastname  { font-size: 11px; }
-  .card__level     { font-size: 11px; margin-top: 0; }
-  .card__shift     { font-size: 10px; margin-top: 0; }
-  .card__pair      { font-size: 10px; }
+  .card__mini-photo { flex: 0 0 auto; width: 70%; font-size: 28px; }
+  .card__mini-info  { width: 100%; align-items: center; gap: 2px; }
+  .card__mini-name  { font-size: 13px; font-weight: 700; white-space: normal; }
+  .card__mini-level { font-size: 12px; }
+  .card__mini-shift { font-size: 11px; white-space: normal; }
 }
 
 /* ── Misc ────────────────────────────────────────────────────────────────────── */
