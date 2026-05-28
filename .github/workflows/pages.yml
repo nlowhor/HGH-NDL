@@ -1,13 +1,8 @@
 name: Deploy to GitHub Pages
 
-# Auto-deploys the static site whenever the working branch or main is
-# updated. The entire repo root is published as-is (no build step).
-
+# Dev branch does NOT auto-deploy to production Pages.
+# Use workflow_dispatch to manually trigger a preview deploy if needed.
 on:
-  push:
-    branches:
-      - main
-      - claude/fix-empty-text-blocks-RxgzT
   workflow_dispatch:
 
 permissions:

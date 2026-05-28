@@ -1,4 +1,4 @@
-name: Sync Residents from Medrez (DEV)
+name: Sync Attendings from QGenda (DEV)
 
 # Dev sync — runs against the dev Google Sheet and commits to the dev branch.
 # Triggered manually only; scheduled syncs run from the live branch.
@@ -11,7 +11,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -24,30 +24,33 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: scripts/sync-residents/package.json
+          cache-dependency-path: scripts/sync-attendings/package.json
 
       - name: Install dependencies
-        working-directory: scripts/sync-residents
+        working-directory: scripts/sync-attendings
         run: npm install
 
-      - name: Run resident sync
-        working-directory: scripts/sync-residents
+      - name: Run attending sync
+        working-directory: scripts/sync-attendings
         env:
           CANONICAL_SHEET_ID:          ${{ secrets.DEV_CANONICAL_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          AIRTABLE_API_KEY:            ${{ secrets.AIRTABLE_API_KEY }}
-          AIRTABLE_RESIDENTS_BASE_ID:  ${{ secrets.AIRTABLE_RESIDENTS_BASE_ID }}
           GITHUB_TOKEN:                ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY:           ${{ github.repository }}
           GITHUB_REF_NAME:             dev
           FORCE_PHOTO_REFRESH:         ''
         run: node index.js
 
-      - name: Upload debug screenshot
+      - name: Upload debug screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: medrez-debug-dev
-          path: scripts/sync-residents/medrez-debug.png
+          name: attending-sync-debug-dev
+          path: |
+            scripts/sync-attendings/qgenda-debug.png
+            scripts/sync-attendings/qgenda-debug.html
+            scripts/sync-attendings/qgenda-debug.txt
+            scripts/sync-attendings/faculty-debug.png
+            scripts/sync-attendings/faculty-debug.html
           if-no-files-found: ignore
           retention-days: 7
