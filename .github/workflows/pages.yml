@@ -1,13 +1,9 @@
 name: Deploy to GitHub Pages
 
-# Auto-deploys the static site whenever the working branch or main is
-# updated. The entire repo root is published as-is (no build step).
-
 on:
   push:
     branches:
-      - main
-      - claude/fix-empty-text-blocks-RxgzT
+      - live
   workflow_dispatch:
 
 permissions:

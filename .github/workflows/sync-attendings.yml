@@ -1,0 +1,56 @@
+name: Sync Attendings from QGenda
+
+on:
+  schedule:
+    - cron: '0 14 * * *'  # Daily at 6 AM Pacific (14:00 UTC)
+  workflow_dispatch:        # Allow manual trigger from Actions tab
+
+permissions:
+  contents: write  # Required to commit headshots to the repo via GitHub API.
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: live
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: scripts/sync-attendings/package.json
+
+      - name: Install dependencies
+        working-directory: scripts/sync-attendings
+        run: npm install
+
+      - name: Run attending sync
+        working-directory: scripts/sync-attendings
+        env:
+          CANONICAL_SHEET_ID:          ${{ secrets.CANONICAL_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GITHUB_TOKEN:                ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:           ${{ github.repository }}
+          GITHUB_REF_NAME:             live
+          FORCE_PHOTO_REFRESH:         ${{ github.event.schedule == '0 14 * * 0' && 'true' || '' }}
+        run: node index.js
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attending-sync-debug
+          path: |
+            scripts/sync-attendings/qgenda-debug.png
+            scripts/sync-attendings/qgenda-debug.html
+            scripts/sync-attendings/qgenda-debug.txt
+            scripts/sync-attendings/faculty-debug.png
+            scripts/sync-attendings/faculty-debug.html
+          if-no-files-found: ignore
+          retention-days: 7

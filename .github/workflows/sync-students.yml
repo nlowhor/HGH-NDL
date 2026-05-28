@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: live
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -31,6 +33,7 @@ jobs:
       - name: Run student sync
         working-directory: scripts/sync-students
         env:
-          CANONICAL_SHEET_ID:          ${{ secrets.CANONICAL_SHEET_ID }}
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          CANONICAL_SHEET_ID:           ${{ secrets.CANONICAL_SHEET_ID }}
+          STUDENT_SCHEDULE_SHEET_ID:    ${{ secrets.STUDENT_SCHEDULE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON:  ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: node index.js
