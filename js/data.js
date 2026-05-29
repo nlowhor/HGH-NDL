@@ -8,13 +8,17 @@ import { fetchSheetRoster } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
 import { fetchWebsiteRoster } from "./sources/web.js";
 
-const OFFSITE_KEYWORDS = ["san leandro", "slh", "alameda", "cho"];
+const OFFSITE_KEYWORDS = ["san leandro", "slh", "alameda", "cho", " ah ", "ah-", "-ah"];
 function isOffsite(r) {
-  const text = [r.name, r.title, r.notes].filter(Boolean).join(" ").toLowerCase();
+  const text = " " + [r.name, r.title, r.notes].filter(Boolean).join(" ").toLowerCase() + " ";
   return OFFSITE_KEYWORDS.some((kw) => text.includes(kw));
 }
 function isBackupRow(r) {
   return /backup/i.test(r.notes || "");
+}
+function isRnRow(r) {
+  // Exclude nursing staff from the student column
+  return r.role === "student" && /\brn\b/i.test([r.title, r.notes, r.name].filter(Boolean).join(" "));
 }
 
 // Names (case-insensitive word match) that should never appear in the roster.
@@ -134,7 +138,8 @@ export async function loadAllRosters({ demoMode = false } = {}) {
   const rows = dedupe(buckets.flat())
     .filter((r) => !isOffsite(r))
     .filter((r) => !isBackupRow(r))
-    .filter((r) => !isExcludedName(r));
+    .filter((r) => !isExcludedName(r))
+    .filter((r) => !isRnRow(r));
 
   // Merge per-person data (photo_url, title) from dedicated role tabs when URLs
   // are configured. Person-tab values are authoritative: they override whatever
