@@ -82,11 +82,14 @@ function lastName(s) {
 // Parse QGenda header text → "YYYY-MM-DD" or null.
 const MONTH_NUM = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
 function parseDateHeader(text) {
+  // Optional day-of-week prefix (full or 3-letter) handles concatenated format
+  // like "MONAPR27", "FRIDAYMAY1", "SATMAY2" where \b won't fire between letter runs.
   const m = text.match(/(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*(\d{1,2})(?:[,\s]+(\d{4}))?/i);
   if (!m) return null;
   const mon = MONTH_NUM[m[2].toLowerCase().slice(0,3)];
   const day = parseInt(m[3], 10);
   let year  = m[4] ? parseInt(m[4], 10) : new Date().getFullYear();
+  // Roll over to next year if date is far in the past.
   const probe = new Date(`${year}-${String(mon).padStart(2,'0')}-${String(day).padStart(2,'0')}`);
   if (probe < new Date(Date.now() - 90 * 86400_000)) year++;
   return `${year}-${String(mon).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
@@ -94,6 +97,9 @@ function parseDateHeader(text) {
 
 // ── QGenda API response parser ────────────────────────────────────────────────
 
+// Recursively walks any JSON value, threading parent context (date, label, time)
+// downward. Records an entry whenever a node has both a date (from self or ancestor)
+// and a staff name (in self).
 function parseQGendaApiJson(json, fromDate, toDate) {
   const entries = [];
   const seen    = new Set();
@@ -116,6 +122,7 @@ function parseQGendaApiJson(json, fromDate, toDate) {
   }
 
   function extractName(obj) {
+    // Direct name fields (camelCase + PascalCase)
     const direct = get(obj,
       'staffName', 'StaffName', 'fullName', 'FullName',
       'displayName', 'DisplayName', 'providerName', 'ProviderName',
@@ -123,6 +130,7 @@ function parseQGendaApiJson(json, fromDate, toDate) {
     );
     if (direct && typeof direct === 'string') return direct.trim();
 
+    // First + last name
     const first = get(obj, 'firstName', 'FirstName', 'staffFirstName', 'StaffFirstName', 'first', 'First');
     const last  = get(obj, 'lastName',  'LastName',  'staffLastName',  'StaffLastName',  'last',  'Last');
     if (first || last) return [first, last].filter(Boolean).join(' ').trim();
@@ -133,6 +141,7 @@ function parseQGendaApiJson(json, fromDate, toDate) {
   function extractLabel(obj) {
     const task = get(obj, 'taskName', 'TaskName', 'shiftName', 'ShiftName', 'label', 'Label',
                      'taskAbbrev', 'TaskAbbrev', 'taskDisplayName', 'TaskDisplayName') || null;
+    // QGenda may put the facility/location in a separate field — combine so OFFSITE_RE can filter it.
     const facility = get(obj,
       'facilityName', 'FacilityName', 'facilityAbbreviation', 'FacilityAbbreviation',
       'site', 'Site', 'location', 'Location', 'hospital', 'Hospital',
@@ -182,6 +191,7 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
 
   for (const { url, json } of apiResponses) {
     console.log(`  Parsing API: ${url.slice(0, 100)}`);
+    // Log first-level structure for debugging.
     if (json && typeof json === 'object') {
       const keys = Array.isArray(json)
         ? `array[${json.length}], item[0] keys: ${json[0] ? Object.keys(json[0]).slice(0,8).join(',') : 'n/a'}`
@@ -210,6 +220,7 @@ function parseQGendaTables(tables, fromDate, toDate) {
   for (const rows of tables) {
     if (rows.length < 2) continue;
 
+    // Find the header row with date-like cells.
     let headerIdx = -1;
     let colDates  = [];
     for (let i = 0; i < Math.min(rows.length, 5); i++) {
@@ -223,9 +234,14 @@ function parseQGendaTables(tables, fromDate, toDate) {
     if (headerIdx < 0) continue;
     console.log(`QGenda table: header at row ${headerIdx}, dates: ${colDates.filter(Boolean).join(', ')}`);
 
+    // Each subsequent row is a shift row; each cell has shift info for that day.
     const SHIFT_RE = /^(Backup|Day\s*[A-Z]?|PIT|Swing|Night|FST|SLH|Noc|Alameda|San\s+Leandro)/i;
     const TIME_RE  = /(\d{1,2}[ap])\s*[-–]\s*(\d{1,2}[ap])/i;
+    // Abbreviated name: "C. Bailey" — note [a-z]* (zero or more lowercase after initial).
     const NAME_RE  = /^[A-Z][a-z]*\.?\s+[A-Z][a-z'\-]+(\s+[A-Z][a-z'\-]+)?$/;
+
+    let currentLabel = '';
+    let currentTime  = '';
 
     for (let r = headerIdx + 1; r < rows.length; r++) {
       const cells = rows[r];
@@ -235,6 +251,7 @@ function parseQGendaTables(tables, fromDate, toDate) {
         const text = cells[c].text.trim();
         if (!text) continue;
 
+        // Multi-line cell: each line is a separate element.
         const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
         let cellLabel = '', cellTime = '';
         for (const line of lines) {
@@ -261,6 +278,10 @@ function parseQGendaTables(tables, fromDate, toDate) {
 
 // ── QGenda line-by-line text parser ──────────────────────────────────────────
 
+// Parses the raw innerText of the page.
+// QGenda renders each day column sequentially, so the text reads:
+//   all Mon entries → all Tue entries → … (flex/column layout)
+// Date headers are split: "MON APR" on one line, "27" on the next.
 function parseQGendaText(text, fromDate, toDate) {
   const entries = [];
   const seen    = new Set();
@@ -268,13 +289,16 @@ function parseQGendaText(text, fromDate, toDate) {
 
   const SHIFT_LABEL_RE = /^(Backup|Day\s*[A-Z]?|PIT|Swing\s*[A-Z]?|Night|Noc|FST|SLH|Alameda|San\s+Leandro)/i;
   const TIME_RE        = /^(\d{1,2}[ap])\s*[-–]\s*(\d{1,2}[ap])/i;
+  // Abbreviated name: "C. Bailey", "M. Montgomery", "A. Quinones-Rivera".
+  // [a-z]* (not +) handles single-letter initials like "C.".
   const NAME_RE        = /^[A-Z][a-z]*\.?\s+[A-Z][a-z'\-]+(\s+[A-Z][a-z'\-]+)?$/;
+  // Line has a month name but no digit → it's the first half of a split date header.
   const MONTH_ONLY_RE  = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/i;
 
   let currentDate   = null;
   let currentLabel  = '';
   let currentTime   = '';
-  let pendingMonth  = '';
+  let pendingMonth  = ''; // e.g. "MON APR" — waiting for day number on next line
 
   function addEntry(name) {
     const shift = currentTime  ? shiftFromTime(currentTime)
@@ -287,6 +311,7 @@ function parseQGendaText(text, fromDate, toDate) {
   }
 
   for (const line of lines) {
+    // ── Step 1: Try combining a pending "MON APR" with a standalone day number.
     if (pendingMonth && /^\d{1,2}$/.test(line)) {
       const d = parseDateHeader(`${pendingMonth} ${line}`);
       if (d) { currentDate = d; currentLabel = ''; currentTime = ''; }
@@ -295,21 +320,26 @@ function parseQGendaText(text, fromDate, toDate) {
     }
     pendingMonth = '';
 
+    // ── Step 2: Try to parse current line as a full or partial date.
     const d = parseDateHeader(line);
     if (d) {
       currentDate = d; currentLabel = ''; currentTime = '';
       continue;
     }
 
+    // Partial date: line has a month name but no digit.
+    // e.g. "MON APR", "SAT MAY", "FRIDAY" (no month → ignored).
     if (MONTH_ONLY_RE.test(line) && !/\d/.test(line)) {
       pendingMonth = line;
-      continue;
+      continue; // wait for the day number on the next line
     }
 
     if (!currentDate || currentDate < fromDate || currentDate > toDate) continue;
 
+    // ── Step 3: Shift label, time, or provider name.
     if (SHIFT_LABEL_RE.test(line)) {
       currentLabel = line;
+      // Extract embedded start time from label: "Day A7a - 4p" → "7a", "Night11p - 8a" → "11p".
       const tm = line.match(/(\d{1,2}[ap])\s*[-–]/i);
       currentTime = tm ? tm[1] : '';
       continue;
@@ -327,6 +357,7 @@ function parseQGendaText(text, fromDate, toDate) {
 
 // ── QGenda scraper ────────────────────────────────────────────────────────────
 
+// Extract all table data + full innerText from the current page state.
 async function extractQGendaPageData(page) {
   return page.evaluate(() => {
     const tables = [];
@@ -389,8 +420,13 @@ async function navigateQGendaToMonth(page, monthDate) {
   }
 }
 
-async function scrapeQGenda(browser) {
-  console.log('Navigating to QGenda…');
+async function scrapeQGendaMonth(browser, monthDate, monthNum) {
+  const mm   = String(monthDate.getMonth() + 1).padStart(2, '0');
+  const yyyy = monthDate.getFullYear();
+  const startDateParam = `${mm}%2F01%2F${yyyy}`;
+  const url = `${QGENDA_URL}&startDate=${startDateParam}`;
+
+  console.log(`QGenda month ${monthNum}: loading ${mm}/${yyyy}…`);
   const page = await browser.newPage();
   page.setDefaultTimeout(60_000);
   await page.setUserAgent(
@@ -401,67 +437,67 @@ async function scrapeQGenda(browser) {
   const apiResponses = [];
   page.on('response', async (response) => {
     try {
-      const url = response.url();
-      if (!url.includes('qgenda.com')) return;
-      if (/\.(js|css|png|jpg|gif|ico|woff2?|svg|map)(\?|$)/.test(url)) return;
+      const respUrl = response.url();
+      if (!respUrl.includes('qgenda.com')) return;
+      if (/\.(js|css|png|jpg|gif|ico|woff2?|svg|map)(\?|$)/.test(respUrl)) return;
       const text = await response.text().catch(() => '');
       const t = text.trim();
       if (!t || (t[0] !== '[' && t[0] !== '{')) return;
       const json = JSON.parse(t);
-      apiResponses.push({ url, json });
-      console.log(`  API captured: ${url.slice(0, 80)}`);
+      apiResponses.push({ url: respUrl, json });
+      console.log(`  API captured: ${respUrl.slice(0, 80)}`);
     } catch { /* skip */ }
   });
 
-  await page.goto(QGENDA_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60_000 });
   await new Promise(r => setTimeout(r, 4000));
 
-  const { from, to } = dateWindow();
+  const data = await extractQGendaPageData(page);
+  console.log(`QGenda month ${monthNum}: ${data.text.length} chars, ${data.tables.length} table(s)`);
 
-  // Strategy 1: API responses.
-  console.log(`QGenda: captured ${apiResponses.length} API response(s)`);
-  if (apiResponses.length > 0) {
-    const apiEntries = parseQGendaApiResponses(apiResponses, from, to);
-    if (apiEntries.length > 0) {
-      console.log(`QGenda entries from API: ${apiEntries.length}`);
-      await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
-      await page.close();
-      return apiEntries;
-    }
+  if (monthNum === 1) {
+    const html = await page.content();
+    fs.writeFileSync('qgenda-debug.html', html);
+    fs.writeFileSync('qgenda-debug.txt', data.text);
+    await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
   }
 
-  // Strategy 2: DOM/text extraction, navigating month-by-month.
-  const allText   = [];
-  const allTables = [];
+  await page.close();
+  return { text: data.text, tables: data.tables, apiResponses };
+}
 
+async function scrapeQGenda(browser) {
+  const { from, to } = dateWindow();
   const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28);
   const startMonth = new Date(from + 'T12:00:00');
   startMonth.setDate(1);
 
+  const allText        = [];
+  const allTables      = [];
+  const allApiResponses = [];
+
   for (let m = 0; m < monthsToFetch; m++) {
     const monthDate = new Date(startMonth);
     monthDate.setMonth(monthDate.getMonth() + m);
-
-    if (m > 0) {
-      const navigated = await navigateQGendaToMonth(page, monthDate);
-      if (!navigated) break;
-    }
-
-    const data = await extractQGendaPageData(page);
-    allText.push(data.text);
-    allTables.push(...data.tables);
-    console.log(`QGenda month ${m + 1}: ${data.text.length} chars, ${data.tables.length} table(s)`);
+    const result = await scrapeQGendaMonth(browser, monthDate, m + 1);
+    allText.push(result.text);
+    allTables.push(...result.tables);
+    allApiResponses.push(...result.apiResponses);
   }
 
-  const html = await page.content();
-  fs.writeFileSync('qgenda-debug.html', html);
-  fs.writeFileSync('qgenda-debug.txt', allText.join('\n---\n'));
-  await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
-
-  await page.close();
+  // Strategy 1: API responses.
+  console.log(`QGenda: captured ${allApiResponses.length} API response(s) total`);
+  if (allApiResponses.length > 0) {
+    const apiEntries = parseQGendaApiResponses(allApiResponses, from, to);
+    if (apiEntries.length > 0) {
+      console.log(`QGenda entries from API: ${apiEntries.length}`);
+      return apiEntries;
+    }
+  }
 
   const combinedText = allText.join('\n');
 
+  // Strategy 2a: Table parsing.
   if (allTables.length > 0) {
     console.log(`QGenda: ${allTables.length} table(s) found across all months`);
     const tableEntries = parseQGendaTables(allTables, from, to);
@@ -471,6 +507,7 @@ async function scrapeQGenda(browser) {
     }
   }
 
+  // Strategy 2b: Line-by-line text parsing.
   console.log('QGenda: falling back to text parsing…');
   const textEntries = parseQGendaText(combinedText, from, to);
   console.log(`QGenda entries from text: ${textEntries.length}`);
@@ -494,6 +531,7 @@ async function scrapeFacultyPhotos(browser) {
 
   await page.goto(FACULTY_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
 
+  // Wait for WordPress loading overlay to clear.
   try {
     await page.waitForFunction(
       () => {
@@ -510,6 +548,7 @@ async function scrapeFacultyPhotos(browser) {
     );
   } catch { /* spinner check timed out */ }
 
+  // Scroll to trigger lazy-loaded images.
   await page.evaluate(async () => {
     await new Promise(resolve => {
       let pos = 0;
@@ -523,6 +562,7 @@ async function scrapeFacultyPhotos(browser) {
     window.scrollTo(0, 0);
   });
 
+  // Save debug HTML.
   const html = await page.content();
   fs.writeFileSync('faculty-debug.html', html);
   await page.screenshot({ path: 'faculty-debug.png', fullPage: true }).catch(() => {});
@@ -534,14 +574,17 @@ async function scrapeFacultyPhotos(browser) {
       try { return new URL(src || '', facultyUrl).href; } catch { return ''; }
     }
 
+    // Find the best image src for an element (prefers data-src for lazy images).
     function bestSrc(el) {
       for (const img of el.querySelectorAll('img')) {
         const src = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') ||
                     img.getAttribute('src') || '';
         if (!src || src.startsWith('data:') || src.endsWith('.svg') || src.includes('placeholder')) continue;
+        // Skip tiny icons (<50px natural width if known).
         if (img.naturalWidth > 0 && img.naturalWidth < 50) continue;
         return absUrl(src);
       }
+      // CSS background-image fallback.
       for (const node of [el, ...el.querySelectorAll('[style*="background"]')]) {
         const bg = (node.getAttribute('style') || '') + window.getComputedStyle(node).backgroundImage;
         const m  = bg.match(/url\(["']?([^"')]+)["']?\)/);
@@ -550,12 +593,23 @@ async function scrapeFacultyPhotos(browser) {
       return '';
     }
 
+    // Key insight for this WordPress theme: each faculty card has an <img> and
+    // somewhere nearby a line of text with the person's name + credential.
+    // Person names: every word starts with uppercase ("Kevin Gardner, MD").
+    // Job titles: contain lowercase connectives ("Director of Critical Care").
+
+    // Include all common EM credentials — missing FACEP/FAAEM was causing many names to be skipped.
     const CREDENTIAL_RE = /\b(MD|DO|PhD|MPH|MSEd?|MACM|MSc|FACEP|FAAEM|FACP|PA-?C|NP|RN|PA|MS)\b/i;
 
+    // A person name has 2–5 words where EVERY word starts with an uppercase letter.
+    // Strip trailing credentials first, then check each remaining word.
     function isPersonName(text) {
+      // Remove credential suffix (",  MD" / ", PhD" etc.)
       const clean = text.replace(/[,;]\s*(MD|DO|PhD|MPH|MACM|MSEd?|MSc|MA|MS|PA|RN|NP)(\s+\S+)*$/gi, '').trim();
+      // Remove standalone credential tokens left in the middle.
       const words = clean.split(/\s+/).filter(w => !/^(md|do|phd|mph|msed?|macm|msc|ma|ms|pa|rn|np)$/i.test(w));
       if (words.length < 2 || words.length > 5) return false;
+      // Every word must start with uppercase — eliminates "Director of Critical Care".
       return words.every(w => /^[A-Z]/.test(w));
     }
 
@@ -563,13 +617,20 @@ async function scrapeFacultyPhotos(browser) {
       return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
     }
 
+    // Given an img element, walk up the DOM looking for a sibling or ancestor
+    // text node that is a person name. Many WordPress themes put the name in an
+    // <h4> and the credential in a separate <p> — so we accept a heading-only
+    // name when the container has a credential anywhere in it.
     function nearbyName(imgEl) {
       let el = imgEl.parentElement;
       for (let depth = 0; depth < 7 && el; depth++) {
+        // Skip containers that hold many images (too broad — would match wrong card).
         if (el.querySelectorAll('img').length > 4) { el = el.parentElement; continue; }
 
         const containerHasCredential = CREDENTIAL_RE.test(textOf(el));
 
+        // Headings + bold: accept person name even without credential in same element,
+        // as long as the enclosing card container has a credential somewhere.
         for (const tag of ['h1','h2','h3','h4','h5','h6','strong','b']) {
           for (const node of el.querySelectorAll(tag)) {
             const t = textOf(node).split('\n')[0].trim();
@@ -578,12 +639,14 @@ async function scrapeFacultyPhotos(browser) {
           }
         }
 
+        // Paragraphs: require credential in same element to avoid false positives.
         for (const node of el.querySelectorAll('p')) {
           const t = textOf(node).split('\n')[0].trim();
           if (t.length < 4 || t.length > 80) continue;
           if (CREDENTIAL_RE.test(t) && isPersonName(t)) return t;
         }
 
+        // Check adjacent siblings.
         for (const sib of [el.nextElementSibling, el.previousElementSibling]) {
           if (!sib) continue;
           const t = textOf(sib).split('\n')[0].trim();
@@ -595,12 +658,14 @@ async function scrapeFacultyPhotos(browser) {
       return '';
     }
 
+    // Fallback: scan all headings for person names; credential may be in a sibling element.
     function findByHeadings() {
       const found = {};
       for (const tag of ['h1','h2','h3','h4','h5','h6']) {
         for (const heading of document.querySelectorAll(tag)) {
           const t = textOf(heading).split('\n')[0].trim();
           if (!isPersonName(t) || t.length > 80) continue;
+          // Require a credential somewhere in the card container (parent or grandparent).
           const container = heading.parentElement;
           if (!container) continue;
           const gp = container.parentElement;
@@ -608,6 +673,7 @@ async function scrapeFacultyPhotos(browser) {
                                 (gp && CREDENTIAL_RE.test(textOf(gp)));
           if (!hasCredential) continue;
 
+          // Look in parent and grandparent for an image.
           const src = bestSrc(container);
           if (src) { found[t] = src; continue; }
 
@@ -620,6 +686,7 @@ async function scrapeFacultyPhotos(browser) {
       return found;
     }
 
+    // Strategy A: scan all imgs, find nearby credential-bearing name.
     for (const img of document.querySelectorAll('img')) {
       const src = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || img.src || '';
       if (!src || src.startsWith('data:') || src.endsWith('.svg')) continue;
@@ -630,17 +697,21 @@ async function scrapeFacultyPhotos(browser) {
       if (name) result[name] = abs;
     }
 
+    // Strategy B: heading-first scan — always run so cards missed by Strategy A are filled in.
     const headingResults = findByHeadings();
     for (const [n, u] of Object.entries(headingResults)) {
       if (!result[n]) result[n] = u;
     }
 
+    // Strategy C: plain-text scan for any "First Last, Credential" pattern.
+    // Builds name entries even when DOM photo-association fails.
+    // Names found here get an empty URL so they contribute to displayByLast but not byLast.
     const pageText = document.body.innerText || '';
     const textRe = /([A-Z][a-z]+(?:(?:\s+|-)[A-Z][a-z'-]+)+)[,\s]+(?:MD|DO|PhD|FACEP|FAAEM|FACP|PA-?C|NP|RN|PA|MPH)/g;
     let tm;
     while ((tm = textRe.exec(pageText)) !== null) {
       const n = tm[1].trim();
-      if (!result[n]) result[n] = '';
+      if (!result[n]) result[n] = ''; // empty URL — name only, used for display-name resolution
     }
 
     return result;
@@ -648,14 +719,17 @@ async function scrapeFacultyPhotos(browser) {
 
   await page.close();
 
+  // Build normalized lookup maps: full-name key, last-name key, and display name by last name.
   const byFull       = {};
   const byLast       = {};
-  const displayByLast = {};
+  const displayByLast = {}; // last name → "Caitlin Bailey" (no credential suffix)
   for (const [name, url] of Object.entries(photos)) {
     const full = normalizeName(name);
     const last = lastName(name);
     const display = name.replace(CREDENTIAL_RE, '').replace(/[\s,;]+$/, '').replace(/\s+/g, ' ').trim();
+    // displayByLast: built from all names including text-only (empty URL) — for display name resolution.
     if (last && !displayByLast[last]) displayByLast[last] = display;
+    // byFull / byLast: only entries with a real photo URL.
     if (!url) continue;
     byFull[full] = url;
     if (last && !byLast[last]) byLast[last] = url;
@@ -691,8 +765,10 @@ async function persistAttendingPhotos({ byFull, byLast, displayByLast }) {
     }
   }
 
+  // Rebuild byLast pointing to persisted URLs.
   const newLast = {};
   for (const [last, origUrl] of Object.entries(byLast)) {
+    // Find the full key whose last word matches this last name.
     const fullKey = Object.keys(byFull).find(k => k.split(' ').includes(last));
     newLast[last] = fullKey ? (newFull[fullKey] || origUrl) : origUrl;
   }
@@ -713,11 +789,13 @@ async function getAuth() {
 
 // ── Google Sheets write ───────────────────────────────────────────────────────
 
+// Shifts at these locations are not Highland shifts — exclude from the roster.
 const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO)/i;
 
 async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
   const { byFull, byLast, displayByLast, savedPhotos } = photos;
 
+  // Filter out off-site shifts before touching the sheet.
   const offsiteCount = entries.filter(e => OFFSITE_RE.test(e.shiftLabel || '')).length;
   if (offsiteCount) console.log(`Filtered out ${offsiteCount} off-site entry(s) (San Leandro/Alameda/CHO).`);
   entries = entries.filter(e => !OFFSITE_RE.test(e.shiftLabel || ''));
@@ -775,16 +853,21 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
 
   if (!entries.length) { console.log('No attending entries to append.'); return 0; }
 
+  // QGenda uses abbreviated names ("C. Bailey"); resolve to full name and photo by last name.
   const resolvePhoto = (name) => {
     const last = lastName(name);
     const full = normalizeName(name);
     return byFull[full] || byLast[last] || savedPhotos[full] || savedPhotos[last] || '';
   };
 
+  // Expand abbreviated QGenda name to full display name using faculty page data.
+  // "C. Bailey" → "Caitlin Bailey" by last-name lookup; verifies first initial matches
+  // to avoid mis-mapping when two people share a last name.
   const resolveDisplayName = (name) => {
     const last = lastName(name);
     const full = displayByLast && displayByLast[last];
     if (!full) return name;
+    // If QGenda gave an initial ("C."), confirm it matches the faculty name's first letter.
     const initialMatch = name.match(/^([A-Z])\./);
     if (initialMatch && !full.startsWith(initialMatch[1])) return name;
     return full;
