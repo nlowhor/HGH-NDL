@@ -597,31 +597,19 @@ async function scrapeQGenda(browser) {
       monthDate.setMonth(monthDate.getMonth() + m);
       const mm   = String(monthDate.getMonth() + 1).padStart(2, '0');
       const yyyy = monthDate.getFullYear();
-      const lastDay = new Date(yyyy, monthDate.getMonth() + 1, 0).getDate();
-      const startStr = `${mm}/01/${yyyy}`;
-      const endStr   = `${mm}/${lastDay}/${yyyy}`;
+      const isoStart = `${yyyy}-${mm}-01`; // matches body format "2026-05-01"
 
       // Patch date fields in the body — handles both JSON and form-encoded bodies.
       let newBody = scheduleViewRequest.body;
       if (newBody.trim().startsWith('{')) {
         try {
           const bodyObj = JSON.parse(newBody);
-          // Replace any key that looks like a start/end date
-          for (const k of Object.keys(bodyObj)) {
-            if (/start.*date/i.test(k)) bodyObj[k] = startStr;
-            if (/end.*date/i.test(k))   bodyObj[k] = endStr;
-          }
+          if ('startDate' in bodyObj) bodyObj.startDate = isoStart;
           newBody = JSON.stringify(bodyObj);
         } catch { /* leave body unchanged */ }
-      } else {
-        // URL-encoded form body
-        newBody = newBody
-          .replace(/([Ss]tart[Dd]ate)=[^&]*/g, `$1=${encodeURIComponent(startStr)}`)
-          .replace(/([Ee]nd[Dd]ate)=[^&]*/g,   `$1=${encodeURIComponent(endStr)}`);
       }
 
-      console.log(`  Re-POSTing ScheduleView for ${mm}/${yyyy}…`);
-      console.log(`  Body: ${newBody.slice(0, 200)}`);
+      console.log(`  Re-POSTing ScheduleView for ${mm}/${yyyy} (startDate=${isoStart})…`);
       try {
         const result = await page.evaluate(async ({ url, headers, body }) => {
           const r = await fetch(url, {
