@@ -221,21 +221,47 @@ function parseScheduleTab(rows, tabName) {
 
 // ── CSV — read student schedule ───────────────────────────────────────────────
 
-async function fetchStudentSchedule() {
-  console.log(`Fetching student schedule from CSV: ${STUDENT_SCHEDULE_CSV_URL}`);
-  const res = await fetch(STUDENT_SCHEDULE_CSV_URL);
-  if (!res.ok) throw new Error(`Schedule CSV fetch failed: HTTP ${res.status}`);
-  const text = await res.text();
-  const rows = parseCsv(text);
-
+async function fetchStudentSchedule(auth) {
   const today   = new Date();
   const from    = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
   const to      = new Date(today); to.setDate(to.getDate() + DAYS_AHEAD);
   const fromIso = from.toISOString().slice(0, 10);
   const toIso   = to.toISOString().slice(0, 10);
 
-  const entries  = parseScheduleTab(rows, '');
-  const inWindow = entries.filter(e => e.date >= fromIso && e.date <= toIso);
+  const schedSheetId = process.env.STUDENT_SCHEDULE_SHEET_ID;
+  let allEntries = [];
+
+  if (schedSheetId) {
+    // Use Sheets API to read all tabs dynamically so new blocks are picked up
+    // automatically without code changes.
+    const sheets = google.sheets({ version: 'v4', auth });
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: schedSheetId });
+    const tabs = meta.data.sheets.map(s => ({
+      title: s.properties.title,
+      sheetId: s.properties.sheetId,
+    }));
+    console.log(`Student schedule tabs: ${tabs.map(t => t.title).join(', ')}`);
+
+    for (const tab of tabs) {
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId: schedSheetId,
+        range: tab.title,
+      });
+      const rows = (res.data.values || []).map(r => r.map(c => String(c ?? '')));
+      const entries = parseScheduleTab(rows, tab.title);
+      console.log(`  Tab "${tab.title}": ${entries.length} entries parsed`);
+      allEntries.push(...entries);
+    }
+  } else {
+    // Fallback: single published CSV URL (legacy)
+    console.log(`Fetching student schedule from CSV: ${STUDENT_SCHEDULE_CSV_URL}`);
+    const res = await fetch(STUDENT_SCHEDULE_CSV_URL);
+    if (!res.ok) throw new Error(`Schedule CSV fetch failed: HTTP ${res.status}`);
+    const rows = parseCsv(await res.text());
+    allEntries = parseScheduleTab(rows, '');
+  }
+
+  const inWindow = allEntries.filter(e => e.date >= fromIso && e.date <= toIso);
 
   const seen = new Set();
   const deduped = inWindow.filter(e => {
@@ -243,7 +269,7 @@ async function fetchStudentSchedule() {
     if (seen.has(key)) return false;
     seen.add(key); return true;
   });
-  console.log(`Students parsed: ${entries.length} total, ${inWindow.length} in window, ${deduped.length} deduped.`);
+  console.log(`Students parsed: ${allEntries.length} total, ${inWindow.length} in window, ${deduped.length} deduped.`);
   return deduped;
 }
 
@@ -404,7 +430,7 @@ async function main() {
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
   const auth    = await getAuth();
-  const entries = await fetchStudentSchedule();
+  const entries = await fetchStudentSchedule(auth);
   const n       = await writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries);
   console.log(`\nDone. ${n} student shift rows written to roster.`);
 }
