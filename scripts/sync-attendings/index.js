@@ -541,7 +541,26 @@ async function scrapeQGenda(browser) {
   );
 
   const apiResponses = [];
-  let scheduleViewBaseUrl = null;
+  let scheduleViewRequest = null; // { url, method, headers, body }
+
+  // Intercept requests to capture the ScheduleView POST body.
+  await page.setRequestInterception(true);
+  page.on('request', (request) => {
+    try {
+      const reqUrl = request.url();
+      if (reqUrl.includes('ScheduleView') && !scheduleViewRequest) {
+        scheduleViewRequest = {
+          url:     reqUrl,
+          method:  request.method(),
+          headers: request.headers(),
+          body:    request.postData() || '',
+        };
+        console.log(`  ScheduleView request captured: ${request.method()} ${reqUrl}`);
+        console.log(`  ScheduleView body: ${scheduleViewRequest.body.slice(0, 300)}`);
+      }
+    } catch { /* skip */ }
+    request.continue();
+  });
 
   page.on('response', async (response) => {
     try {
@@ -553,11 +572,6 @@ async function scrapeQGenda(browser) {
       if (!t || (t[0] !== '[' && t[0] !== '{')) return;
       const json = JSON.parse(t);
       apiResponses.push({ url: respUrl, json });
-      if (respUrl.includes('ScheduleView') && !scheduleViewBaseUrl) {
-        // Capture full URL so we can re-call it with different date params
-        scheduleViewBaseUrl = respUrl;
-        console.log(`  ScheduleView URL captured: ${respUrl}`);
-      }
     } catch { /* skip */ }
   });
 
@@ -571,9 +585,9 @@ async function scrapeQGenda(browser) {
   fs.writeFileSync('qgenda-debug.txt', data.text);
   await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
 
-  // If we have the ScheduleView URL, re-fetch it for each month window
-  // directly from within the page context (inherits cookies/session).
-  if (scheduleViewBaseUrl) {
+  // Re-POST the ScheduleView endpoint for each subsequent month,
+  // replacing the date fields in the captured request body.
+  if (scheduleViewRequest) {
     const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28);
     const startMonth = new Date(from + 'T12:00:00');
     startMonth.setDate(1);
@@ -583,36 +597,52 @@ async function scrapeQGenda(browser) {
       monthDate.setMonth(monthDate.getMonth() + m);
       const mm   = String(monthDate.getMonth() + 1).padStart(2, '0');
       const yyyy = monthDate.getFullYear();
-
-      // Replace the date params in the captured URL.
-      // QGenda uses startDate and endDate query params like "05/01/2026".
+      const lastDay = new Date(yyyy, monthDate.getMonth() + 1, 0).getDate();
       const startStr = `${mm}/01/${yyyy}`;
-      const endStr   = `${mm}/${new Date(yyyy, monthDate.getMonth() + 1, 0).getDate()}/${yyyy}`;
-      let fetchUrl = scheduleViewBaseUrl
-        .replace(/startDate=[^&]*/,  `startDate=${encodeURIComponent(startStr)}`)
-        .replace(/endDate=[^&]*/,    `endDate=${encodeURIComponent(endStr)}`);
-      // If no date params exist in URL, append them
-      if (!fetchUrl.includes('startDate=')) {
-        fetchUrl += `&startDate=${encodeURIComponent(startStr)}&endDate=${encodeURIComponent(endStr)}`;
+      const endStr   = `${mm}/${lastDay}/${yyyy}`;
+
+      // Patch date fields in the body — handles both JSON and form-encoded bodies.
+      let newBody = scheduleViewRequest.body;
+      if (newBody.trim().startsWith('{')) {
+        try {
+          const bodyObj = JSON.parse(newBody);
+          // Replace any key that looks like a start/end date
+          for (const k of Object.keys(bodyObj)) {
+            if (/start.*date/i.test(k)) bodyObj[k] = startStr;
+            if (/end.*date/i.test(k))   bodyObj[k] = endStr;
+          }
+          newBody = JSON.stringify(bodyObj);
+        } catch { /* leave body unchanged */ }
+      } else {
+        // URL-encoded form body
+        newBody = newBody
+          .replace(/([Ss]tart[Dd]ate)=[^&]*/g, `$1=${encodeURIComponent(startStr)}`)
+          .replace(/([Ee]nd[Dd]ate)=[^&]*/g,   `$1=${encodeURIComponent(endStr)}`);
       }
 
-      console.log(`  Re-fetching ScheduleView for ${mm}/${yyyy}…`);
+      console.log(`  Re-POSTing ScheduleView for ${mm}/${yyyy}…`);
+      console.log(`  Body: ${newBody.slice(0, 200)}`);
       try {
-        const result = await page.evaluate(async (url) => {
-          const r = await fetch(url, { credentials: 'include' });
-          if (!r.ok) return { error: r.status };
+        const result = await page.evaluate(async ({ url, headers, body }) => {
+          const r = await fetch(url, {
+            method:      'POST',
+            credentials: 'include',
+            headers,
+            body,
+          });
+          if (!r.ok) return { error: r.status, statusText: r.statusText };
           return r.json();
-        }, fetchUrl);
+        }, { url: scheduleViewRequest.url, headers: scheduleViewRequest.headers, body: newBody });
 
         if (result && !result.error) {
-          apiResponses.push({ url: fetchUrl, json: result });
+          apiResponses.push({ url: scheduleViewRequest.url + `?month=${mm}${yyyy}`, json: result });
           const itemCount = Array.isArray(result.items) ? result.items.length : '?';
-          console.log(`  Re-fetched ${mm}/${yyyy}: ${itemCount} items`);
+          console.log(`  Re-POSTed ${mm}/${yyyy}: ${itemCount} items`);
         } else {
-          console.log(`  Re-fetch ${mm}/${yyyy} failed: ${JSON.stringify(result)}`);
+          console.log(`  Re-POST ${mm}/${yyyy} failed: ${JSON.stringify(result)}`);
         }
       } catch (err) {
-        console.warn(`  Re-fetch ${mm}/${yyyy} error:`, err.message);
+        console.warn(`  Re-POST ${mm}/${yyyy} error:`, err.message);
       }
     }
   }
