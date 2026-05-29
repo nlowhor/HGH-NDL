@@ -216,10 +216,12 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
     }
   }
 
-  // Dump all captured API responses for debugging.
-  const apiDump = apiResponses.map(({ url, json }) => ({ url, json }));
-  fs.writeFileSync('qgenda-api-dump.json', JSON.stringify(apiDump, null, 2));
-  console.log(`  Dumped ${apiDump.length} API responses to qgenda-api-dump.json`);
+  // Log key API responses for debugging.
+  for (const { url, json } of apiResponses) {
+    if (!url.includes('qgenda.com')) continue;
+    const snippet = JSON.stringify(json).slice(0, 2000);
+    console.log(`  API JSON [${url.slice(0, 80)}]: ${snippet}`);
+  }
 
   // Parse GetQuickLinkScheduleDisplay items using the lookup maps.
   for (const { url, json } of apiResponses) {
