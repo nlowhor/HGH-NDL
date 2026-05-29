@@ -556,7 +556,7 @@ async function scrapeQGenda(browser) {
       if (respUrl.includes('ScheduleView') && !scheduleViewBaseUrl) {
         // Capture full URL so we can re-call it with different date params
         scheduleViewBaseUrl = respUrl;
-        console.log(`  ScheduleView URL captured: ${respUrl.slice(0, 120)}`);
+        console.log(`  ScheduleView URL captured: ${respUrl}`);
       }
     } catch { /* skip */ }
   });
@@ -1068,7 +1068,7 @@ async function main() {
 
   console.log('Launching Puppeteer…');
   const browser = await puppeteer.launch({
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors'],
     headless: 'new',
   });
 
