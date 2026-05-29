@@ -198,10 +198,14 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
     if (!json || typeof json !== 'object' || Array.isArray(json)) continue;
     const staff = json.staffMembers || json.StaffMembers || [];
     const tasks = json.tasks        || json.Tasks        || [];
+    if (staff.length > 0) {
+      console.log(`  LinkInitialData staff[0] keys: ${Object.keys(staff[0]).join(', ')}`);
+    }
     for (const s of staff) {
       const key = s.staffMemberKey || s.StaffMemberKey || s.key || s.Key;
       const name = s.displayName || s.DisplayName || s.fullName || s.FullName ||
-                   [s.firstName || s.FirstName, s.lastName || s.LastName].filter(Boolean).join(' ');
+                   [s.firstName || s.FirstName, s.lastName || s.LastName].filter(Boolean).join(' ') ||
+                   s.name || s.Name;
       if (key && name) staffMap[key] = name;
     }
     for (const t of tasks) {
@@ -214,49 +218,43 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
       const sample = Object.entries(staffMap).slice(0, 3).map(([k,v]) => `${k.slice(0,8)}→${v}`).join(', ');
       console.log(`    Sample staff: ${sample}`);
     }
-  }
-
-  // Log key API responses for debugging.
-  for (const { url, json } of apiResponses) {
-    if (!url.includes('qgenda.com')) continue;
-    const snippet = JSON.stringify(json).slice(0, 2000);
-    console.log(`  API JSON [${url.slice(0, 80)}]: ${snippet}`);
+    break; // Only need first LinkInitialData
   }
 
   // Parse GetQuickLinkScheduleDisplay items using the lookup maps.
+  const seenScheduleUrls = new Set();
   for (const { url, json } of apiResponses) {
-    const isSchedule = url.includes('GetQuickLinkScheduleDisplay') || url.includes('ScheduleDisplay') || url.includes('ScheduleView');
-    console.log(`  Checking URL for schedule match (${isSchedule}): ${url.slice(0, 100)}`);
-    if (!isSchedule) continue;
+    if (!url.includes('ScheduleView')) continue;
+    if (seenScheduleUrls.has(url)) continue; // all months return identical data; parse once
+    seenScheduleUrls.add(url);
     if (!json || typeof json !== 'object' || Array.isArray(json)) continue;
 
     const items = json.items || json.Items || [];
-    console.log(`  ScheduleDisplay items: ${items.length}, staffMap size: ${Object.keys(staffMap).length}`);
-    console.log(`    Top-level keys: ${Object.keys(json).slice(0, 12).join(', ')}`);
+    console.log(`  ScheduleView items: ${items.length}, staffMap: ${Object.keys(staffMap).length}`);
     if (items.length > 0) {
-      console.log(`    Item[0] keys: ${Object.keys(items[0]).slice(0, 12).join(', ')}`);
-      fs.writeFileSync('qgenda-api-item0.json', JSON.stringify(items[0], null, 2));
+      const dates = [...new Set(items.map(i => (i.date || '').slice(0,10)))].sort();
+      console.log(`    Date range in items: ${dates[0]} → ${dates[dates.length - 1]} (${dates.length} distinct dates)`);
     }
 
     for (const item of items) {
-      const sKey  = item.staffMemberKey || item.StaffMemberKey;
-      const tKey  = item.taskKey        || item.TaskKey;
-      const rawDate = item.date || item.Date || item.taskDate || item.TaskDate ||
-                      item.startDate || item.StartDate || item.scheduleDate || item.ScheduleDate;
+      const sKey   = item.staffMemberKey || item.StaffMemberKey;
+      const tKey   = item.taskKey        || item.TaskKey;
+      const rawDate = (item.date || item.Date || '').slice(0, 10); // ISO already: "YYYY-MM-DD"
       if (!rawDate || !sKey) continue;
+      if (rawDate < fromDate || rawDate > toDate) continue;
 
-      const date = parseDateHeader(String(rawDate));
-      if (!date || date < fromDate || date > toDate) continue;
+      const name  = staffMap[sKey] || null;
+      if (!name) continue; // skip if we can't resolve the name
+      const label = taskMap[tKey] || '';
+      const rawTime = item.startTime || item.StartTime || '';
+      // startTime is like "2026-05-06T11:00:00" — extract just the time portion
+      const timeStr = rawTime.includes('T') ? rawTime.split('T')[1] : rawTime;
+      const shift = timeStr ? shiftFromTime(timeStr) : shiftFromLabel(label);
 
-      const name  = staffMap[sKey] || sKey;
-      const label = taskMap[tKey]  || tKey || '';
-      const time  = item.startTime || item.StartTime || item.start || item.Start || '';
-      const shift = time ? shiftFromTime(String(time)) : shiftFromLabel(label);
-
-      const key = `${date}|${shift}|${name.toLowerCase()}`;
+      const key = `${rawDate}|${shift}|${name.toLowerCase()}`;
       if (!seen.has(key)) {
         seen.add(key);
-        entries.push({ date, shift, name, shiftLabel: label });
+        entries.push({ date: rawDate, shift, name, shiftLabel: label });
       }
     }
   }
