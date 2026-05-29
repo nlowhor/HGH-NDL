@@ -531,39 +531,108 @@ async function scrapeQGendaMonth(browser, monthDate, monthNum) {
 
 async function scrapeQGenda(browser) {
   const { from, to } = dateWindow();
-  const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28);
-  const startMonth = new Date(from + 'T12:00:00');
-  startMonth.setDate(1);
 
-  const allText        = [];
-  const allTables      = [];
-  const allApiResponses = [];
+  console.log('QGenda: loading initial page…');
+  const page = await browser.newPage();
+  page.setDefaultTimeout(60_000);
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+  );
 
-  for (let m = 0; m < monthsToFetch; m++) {
-    const monthDate = new Date(startMonth);
-    monthDate.setMonth(monthDate.getMonth() + m);
-    const result = await scrapeQGendaMonth(browser, monthDate, m + 1);
-    allText.push(result.text);
-    allTables.push(...result.tables);
-    allApiResponses.push(...result.apiResponses);
+  const apiResponses = [];
+  let scheduleViewBaseUrl = null;
+
+  page.on('response', async (response) => {
+    try {
+      const respUrl = response.url();
+      if (!respUrl.includes('qgenda.com')) return;
+      if (/\.(js|css|png|jpg|gif|ico|woff2?|svg|map)(\?|$)/.test(respUrl)) return;
+      const text = await response.text().catch(() => '');
+      const t = text.trim();
+      if (!t || (t[0] !== '[' && t[0] !== '{')) return;
+      const json = JSON.parse(t);
+      apiResponses.push({ url: respUrl, json });
+      if (respUrl.includes('ScheduleView') && !scheduleViewBaseUrl) {
+        // Capture full URL so we can re-call it with different date params
+        scheduleViewBaseUrl = respUrl;
+        console.log(`  ScheduleView URL captured: ${respUrl.slice(0, 120)}`);
+      }
+    } catch { /* skip */ }
+  });
+
+  await page.goto(QGENDA_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
+  await new Promise(r => setTimeout(r, 4000));
+
+  // Save debug artifacts
+  const html = await page.content();
+  fs.writeFileSync('qgenda-debug.html', html);
+  const data = await extractQGendaPageData(page);
+  fs.writeFileSync('qgenda-debug.txt', data.text);
+  await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
+
+  // If we have the ScheduleView URL, re-fetch it for each month window
+  // directly from within the page context (inherits cookies/session).
+  if (scheduleViewBaseUrl) {
+    const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28);
+    const startMonth = new Date(from + 'T12:00:00');
+    startMonth.setDate(1);
+
+    for (let m = 1; m < monthsToFetch; m++) {
+      const monthDate = new Date(startMonth);
+      monthDate.setMonth(monthDate.getMonth() + m);
+      const mm   = String(monthDate.getMonth() + 1).padStart(2, '0');
+      const yyyy = monthDate.getFullYear();
+
+      // Replace the date params in the captured URL.
+      // QGenda uses startDate and endDate query params like "05/01/2026".
+      const startStr = `${mm}/01/${yyyy}`;
+      const endStr   = `${mm}/${new Date(yyyy, monthDate.getMonth() + 1, 0).getDate()}/${yyyy}`;
+      let fetchUrl = scheduleViewBaseUrl
+        .replace(/startDate=[^&]*/,  `startDate=${encodeURIComponent(startStr)}`)
+        .replace(/endDate=[^&]*/,    `endDate=${encodeURIComponent(endStr)}`);
+      // If no date params exist in URL, append them
+      if (!fetchUrl.includes('startDate=')) {
+        fetchUrl += `&startDate=${encodeURIComponent(startStr)}&endDate=${encodeURIComponent(endStr)}`;
+      }
+
+      console.log(`  Re-fetching ScheduleView for ${mm}/${yyyy}…`);
+      try {
+        const result = await page.evaluate(async (url) => {
+          const r = await fetch(url, { credentials: 'include' });
+          if (!r.ok) return { error: r.status };
+          return r.json();
+        }, fetchUrl);
+
+        if (result && !result.error) {
+          apiResponses.push({ url: fetchUrl, json: result });
+          const itemCount = Array.isArray(result.items) ? result.items.length : '?';
+          console.log(`  Re-fetched ${mm}/${yyyy}: ${itemCount} items`);
+        } else {
+          console.log(`  Re-fetch ${mm}/${yyyy} failed: ${JSON.stringify(result)}`);
+        }
+      } catch (err) {
+        console.warn(`  Re-fetch ${mm}/${yyyy} error:`, err.message);
+      }
+    }
   }
 
-  // Strategy 1: API responses.
-  console.log(`QGenda: captured ${allApiResponses.length} API response(s) total`);
-  if (allApiResponses.length > 0) {
-    const apiEntries = parseQGendaApiResponses(allApiResponses, from, to);
+  await page.close();
+
+  // Strategy 1: API responses (includes re-fetched months).
+  console.log(`QGenda: captured ${apiResponses.length} API response(s) total`);
+  if (apiResponses.length > 0) {
+    const apiEntries = parseQGendaApiResponses(apiResponses, from, to);
     if (apiEntries.length > 0) {
       console.log(`QGenda entries from API: ${apiEntries.length}`);
       return apiEntries;
     }
   }
 
-  const combinedText = allText.join('\n');
-
-  // Strategy 2a: Table parsing.
-  if (allTables.length > 0) {
-    console.log(`QGenda: ${allTables.length} table(s) found across all months`);
-    const tableEntries = parseQGendaTables(allTables, from, to);
+  // Strategy 2a: Table parsing from initial page load.
+  if (data.tables.length > 0) {
+    console.log(`QGenda: ${data.tables.length} table(s) found`);
+    const tableEntries = parseQGendaTables(data.tables, from, to);
     if (tableEntries.length > 0) {
       console.log(`QGenda entries from tables: ${tableEntries.length}`);
       return tableEntries;
@@ -572,7 +641,7 @@ async function scrapeQGenda(browser) {
 
   // Strategy 2b: Line-by-line text parsing.
   console.log('QGenda: falling back to text parsing…');
-  const textEntries = parseQGendaText(combinedText, from, to);
+  const textEntries = parseQGendaText(data.text, from, to);
   console.log(`QGenda entries from text: ${textEntries.length}`);
   return textEntries;
 }
