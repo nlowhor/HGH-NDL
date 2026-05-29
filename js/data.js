@@ -17,8 +17,9 @@ function isBackupRow(r) {
   return /backup/i.test(r.notes || "");
 }
 function isRnRow(r) {
-  // Exclude nursing staff from the student column
-  return r.role === "student" && /\brn\b/i.test([r.title, r.notes, r.name].filter(Boolean).join(" "));
+  // Exclude actual nursing staff — match on title or name only, not notes,
+  // since "RN Day" is a valid student shift label written into notes.
+  return r.role === "student" && /\brn\b/i.test([r.title, r.name].filter(Boolean).join(" "));
 }
 
 // Names (case-insensitive word match) that should never appear in the roster.
