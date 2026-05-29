@@ -189,21 +189,76 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
   const entries = [];
   const seen    = new Set();
 
+  // Build lookup maps from LinkInitialData (loaded once per session).
+  let staffMap = {};  // staffMemberKey → displayName
+  let taskMap  = {};  // taskKey → taskName
+
   for (const { url, json } of apiResponses) {
-    console.log(`  Parsing API: ${url.slice(0, 100)}`);
-    // Log first-level structure for debugging.
-    if (json && typeof json === 'object') {
-      const keys = Array.isArray(json)
-        ? `array[${json.length}], item[0] keys: ${json[0] ? Object.keys(json[0]).slice(0,8).join(',') : 'n/a'}`
-        : Object.keys(json).slice(0, 10).join(', ');
-      console.log(`    Structure: ${keys}`);
+    if (!url.includes('LinkInitialData')) continue;
+    if (!json || typeof json !== 'object' || Array.isArray(json)) continue;
+    const staff = json.staffMembers || json.StaffMembers || [];
+    const tasks = json.tasks        || json.Tasks        || [];
+    for (const s of staff) {
+      const key = s.staffMemberKey || s.StaffMemberKey || s.key || s.Key;
+      const name = s.displayName || s.DisplayName || s.fullName || s.FullName ||
+                   [s.firstName || s.FirstName, s.lastName || s.LastName].filter(Boolean).join(' ');
+      if (key && name) staffMap[key] = name;
+    }
+    for (const t of tasks) {
+      const key = t.taskKey || t.TaskKey || t.key || t.Key;
+      const name = t.name || t.Name || t.taskName || t.TaskName || t.abbreviation || t.Abbreviation;
+      if (key && name) taskMap[key] = name;
+    }
+    console.log(`  Built staffMap: ${Object.keys(staffMap).length} staff, taskMap: ${Object.keys(taskMap).length} tasks`);
+    if (Object.keys(staffMap).length > 0) {
+      const sample = Object.entries(staffMap).slice(0, 3).map(([k,v]) => `${k.slice(0,8)}→${v}`).join(', ');
+      console.log(`    Sample staff: ${sample}`);
+    }
+  }
+
+  // Parse GetQuickLinkScheduleDisplay items using the lookup maps.
+  for (const { url, json } of apiResponses) {
+    if (!url.includes('GetQuickLinkScheduleDisplay') && !url.includes('ScheduleDisplay')) continue;
+    if (!json || typeof json !== 'object' || Array.isArray(json)) continue;
+
+    const items = json.items || json.Items || [];
+    console.log(`  ScheduleDisplay items: ${items.length}, staffMap size: ${Object.keys(staffMap).length}`);
+    if (items.length > 0) {
+      console.log(`    Item[0] keys: ${Object.keys(items[0]).slice(0, 12).join(', ')}`);
+      fs.writeFileSync('qgenda-api-item0.json', JSON.stringify(items[0], null, 2));
     }
 
-    const found = parseQGendaApiJson(json, fromDate, toDate);
-    console.log(`    Entries from this response: ${found.length}`);
-    for (const e of found) {
-      const key = `${e.date}|${e.shift}|${e.name.toLowerCase()}`;
-      if (!seen.has(key)) { seen.add(key); entries.push(e); }
+    for (const item of items) {
+      const sKey  = item.staffMemberKey || item.StaffMemberKey;
+      const tKey  = item.taskKey        || item.TaskKey;
+      const rawDate = item.date || item.Date || item.taskDate || item.TaskDate ||
+                      item.startDate || item.StartDate || item.scheduleDate || item.ScheduleDate;
+      if (!rawDate || !sKey) continue;
+
+      const date = parseDateHeader(String(rawDate));
+      if (!date || date < fromDate || date > toDate) continue;
+
+      const name  = staffMap[sKey] || sKey;
+      const label = taskMap[tKey]  || tKey || '';
+      const time  = item.startTime || item.StartTime || item.start || item.Start || '';
+      const shift = time ? shiftFromTime(String(time)) : shiftFromLabel(label);
+
+      const key = `${date}|${shift}|${name.toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        entries.push({ date, shift, name, shiftLabel: label });
+      }
+    }
+  }
+
+  // Fall back to generic walk parser if targeted parser found nothing.
+  if (entries.length === 0) {
+    for (const { url, json } of apiResponses) {
+      const found = parseQGendaApiJson(json, fromDate, toDate);
+      for (const e of found) {
+        const key = `${e.date}|${e.shift}|${e.name.toLowerCase()}`;
+        if (!seen.has(key)) { seen.add(key); entries.push(e); }
+      }
     }
   }
 
