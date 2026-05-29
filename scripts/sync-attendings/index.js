@@ -383,30 +383,33 @@ async function navigateQGendaToMonth(page, monthDate) {
   const dateStr = `${mm}/${dd}/${yyyy}`;
 
   try {
-    const inputSel = [
-      '.k-datepicker input',
-      'input[type="text"][class*="date"]',
-      'input[placeholder*="/"]',
-      '.input-group input[type="text"]',
-      'input[type="date"]',
-    ].join(', ');
-    await page.waitForSelector(inputSel, { timeout: 8_000 });
-    await page.click(inputSel, { clickCount: 3 });
-    await page.type(inputSel, dateStr, { delay: 50 });
+    // Find the date input by its value — QGenda uses a plain text input with
+    // no predictable class or placeholder, but it always holds MM/DD/YYYY.
+    const dateInputHandle = await page.evaluateHandle(() => {
+      const inputs = Array.from(
+        document.querySelectorAll('input[type="text"], input:not([type])')
+      );
+      return inputs.find(el => /\d{1,2}\/\d{1,2}\/\d{4}/.test(el.value)) || null;
+    });
 
-    // Find the Go button — must use a for loop; find(async cb) doesn't work
-    // because async callbacks always return a truthy Promise.
+    const el = dateInputHandle.asElement();
+    if (!el) throw new Error('date input not found by value pattern');
+
+    await el.click({ clickCount: 3 });
+    await el.type(dateStr, { delay: 50 });
+
+    // Find the Go button — use a for loop (find(async cb) doesn't work).
     let goBtn = null;
     const allBtns = await page.$$('button, input[type="submit"], input[type="button"]');
     for (const btn of allBtns) {
-      const t = await btn.evaluate(el => (el.innerText || el.value || '').trim());
+      const t = await btn.evaluate(b => (b.innerText || b.value || '').trim());
       if (/^go$/i.test(t)) { goBtn = btn; break; }
     }
 
     if (goBtn) {
       await goBtn.click();
     } else {
-      await page.keyboard.press('Enter');
+      await el.press('Enter');
     }
 
     await new Promise(r => setTimeout(r, 3000));
