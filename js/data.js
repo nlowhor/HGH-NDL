@@ -8,9 +8,9 @@ import { fetchSheetRoster } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
 import { fetchWebsiteRoster } from "./sources/web.js";
 
-const OFFSITE_KEYWORDS = ["san leandro", "slh", "alameda", "cho", " ah ", "ah-", "-ah"];
+const OFFSITE_KEYWORDS = ["san leandro", "slh", "alameda", "cho", "ah app"];
 function isOffsite(r) {
-  const text = " " + [r.name, r.title, r.notes].filter(Boolean).join(" ").toLowerCase() + " ";
+  const text = [r.name, r.title, r.notes].filter(Boolean).join(" ").toLowerCase();
   return OFFSITE_KEYWORDS.some((kw) => text.includes(kw));
 }
 function isBackupRow(r) {
