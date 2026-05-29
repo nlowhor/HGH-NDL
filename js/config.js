@@ -60,7 +60,7 @@ export const config = {
     personSheetUrls: {
       student:   "https://docs.google.com/spreadsheets/d/e/2PACX-1vQNmwF87H6dQZvru4z3JfUFFASk9a8xheUgwPxY5w_TGGiD-oVr2xWpnipqnRqSQ8zr8XBi0RTyR8UJ/pub?gid=328345555&single=true&output=csv",
       resident:  "https://docs.google.com/spreadsheets/d/e/2PACX-1vQNmwF87H6dQZvru4z3JfUFFASk9a8xheUgwPxY5w_TGGiD-oVr2xWpnipqnRqSQ8zr8XBi0RTyR8UJ/pub?gid=687329166&single=true&output=csv",
-      attending: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQNmwF87H6dQZvru4z3JfUFFASk9a8xheUgwPxY5w_TGGiD-oVr2xWpnipqnRqSQ8zr8XBi0RTyR8UJ/pub?gid=1133961770&single=true&output=csv",
+      attending: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQzrOHaR6272I_DcRx0XtwshfYDYH2B7Wt_w1fEWPS8hj3IkJY8B__tplt_ygZXs1y1L3Nn0_gZG5t8/pub?gid=1133961770&single=true&output=csv",
     },
 
     // Local fallback used when no remote sources return data.
