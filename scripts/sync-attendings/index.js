@@ -198,9 +198,6 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
     if (!json || typeof json !== 'object' || Array.isArray(json)) continue;
     const staff = json.staffMembers || json.StaffMembers || [];
     const tasks = json.tasks        || json.Tasks        || [];
-    if (staff.length > 0) {
-      console.log(`  LinkInitialData staff[0] keys: ${Object.keys(staff[0]).join(', ')}`);
-    }
     for (const s of staff) {
       const key = s.staffMemberKey || s.StaffMemberKey || s.key || s.Key;
       const name = s.displayName || s.DisplayName || s.fullName || s.FullName ||
@@ -213,11 +210,7 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
       const name = t.name || t.Name || t.taskName || t.TaskName || t.abbreviation || t.Abbreviation;
       if (key && name) taskMap[key] = name;
     }
-    console.log(`  Built staffMap: ${Object.keys(staffMap).length} staff, taskMap: ${Object.keys(taskMap).length} tasks`);
-    if (Object.keys(staffMap).length > 0) {
-      const sample = Object.entries(staffMap).slice(0, 3).map(([k,v]) => `${k.slice(0,8)}→${v}`).join(', ');
-      console.log(`    Sample staff: ${sample}`);
-    }
+    console.log(`  QGenda staff loaded: ${Object.keys(staffMap).length}, tasks: ${Object.keys(taskMap).length}`);
     break; // Only need first LinkInitialData
   }
 
@@ -230,11 +223,6 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
     if (!json || typeof json !== 'object' || Array.isArray(json)) continue;
 
     const items = json.items || json.Items || [];
-    console.log(`  ScheduleView items: ${items.length}, staffMap: ${Object.keys(staffMap).length}`);
-    if (items.length > 0) {
-      const dates = [...new Set(items.map(i => (i.date || '').slice(0,10)))].sort();
-      console.log(`    Date range in items: ${dates[0]} → ${dates[dates.length - 1]} (${dates.length} distinct dates)`);
-    }
 
     for (const item of items) {
       const sKey   = item.staffMemberKey || item.StaffMemberKey;
