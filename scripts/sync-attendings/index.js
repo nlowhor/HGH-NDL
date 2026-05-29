@@ -383,24 +383,29 @@ async function navigateQGendaToMonth(page, monthDate) {
   const dateStr = `${mm}/${dd}/${yyyy}`;
 
   try {
-    // QGenda's date input is typically an <input type="text"> inside its toolbar.
-    const inputSel = 'input[type="text"][class*="date"], input[type="date"], input[placeholder*="/"], .k-datepicker input, .input-group input[type="text"]';
+    const inputSel = [
+      '.k-datepicker input',
+      'input[type="text"][class*="date"]',
+      'input[placeholder*="/"]',
+      '.input-group input[type="text"]',
+      'input[type="date"]',
+    ].join(', ');
     await page.waitForSelector(inputSel, { timeout: 8_000 });
     await page.click(inputSel, { clickCount: 3 });
     await page.type(inputSel, dateStr, { delay: 50 });
 
-    // Click the Go button.
-    const goBtnSel = 'button.btn-primary, button[type="submit"], input[type="submit"], .go-btn, button:not([disabled])';
-    const goBtn = await page.$$(goBtnSel)
-      .then(btns => btns.find(async b => {
-        const t = await b.evaluate(el => el.innerText || el.value || '');
-        return /^go$/i.test(t.trim());
-      }));
+    // Find the Go button — must use a for loop; find(async cb) doesn't work
+    // because async callbacks always return a truthy Promise.
+    let goBtn = null;
+    const allBtns = await page.$$('button, input[type="submit"], input[type="button"]');
+    for (const btn of allBtns) {
+      const t = await btn.evaluate(el => (el.innerText || el.value || '').trim());
+      if (/^go$/i.test(t)) { goBtn = btn; break; }
+    }
 
     if (goBtn) {
       await goBtn.click();
     } else {
-      // Fall back: press Enter in the date field.
       await page.keyboard.press('Enter');
     }
 
