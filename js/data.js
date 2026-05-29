@@ -139,7 +139,15 @@ export async function loadAllRosters({ demoMode = false } = {}) {
     .filter((r) => !isOffsite(r))
     .filter((r) => !isBackupRow(r))
     .filter((r) => !isExcludedName(r))
-    .filter((r) => !isRnRow(r));
+    .filter((r) => !isRnRow(r))
+    .map((r) => {
+      // Swing sub-shifts may be written with shift='day' if they start before 15:00.
+      // Any row whose notes contain "swing" belongs on the evening/swing view.
+      if (r.role === 'resident' && /swing/i.test(r.notes || '') && r.shift === 'day') {
+        return { ...r, shift: 'evening' };
+      }
+      return r;
+    });
 
   // Merge per-person data (photo_url, title) from dedicated role tabs when URLs
   // are configured. Person-tab values are authoritative: they override whatever

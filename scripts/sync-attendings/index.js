@@ -40,10 +40,21 @@ function dateWindow() {
   return { from: isoDate(from), to: isoDate(to) };
 }
 
-// Map a start-time string like "7a", "3p", "11p", "9a" or "7:00 AM" → shift bucket.
+// Map a start-time string to a shift bucket.
+// Handles 12h ("7a", "3p", "7:00 AM") and 24h ("15:00:00", "23:00") formats.
 function shiftFromTime(timeStr) {
   if (!timeStr) return 'day';
-  const m = String(timeStr).match(/(\d{1,2})(?::(\d{2}))?\s*(a|p|am|pm)/i);
+  const s = String(timeStr);
+  // 24-hour: "HH:MM" or "HH:MM:SS" with no am/pm
+  const h24 = s.match(/^(\d{1,2}):\d{2}/);
+  if (h24 && !/[ap]m?$/i.test(s)) {
+    const h = parseInt(h24[1], 10);
+    if (h >= 23 || h < 7) return 'night';
+    if (h >= 15)           return 'evening';
+    return 'day';
+  }
+  // 12-hour: "7a", "3p", "11:00 AM"
+  const m = s.match(/(\d{1,2})(?::(\d{2}))?\s*(a|p|am|pm)/i);
   if (!m) return 'day';
   let h = parseInt(m[1], 10);
   const ap = m[3].toLowerCase().startsWith('p');
