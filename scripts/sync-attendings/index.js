@@ -420,8 +420,13 @@ async function navigateQGendaToMonth(page, monthDate) {
   }
 }
 
-async function scrapeQGenda(browser) {
-  console.log('Navigating to QGenda…');
+async function scrapeQGendaMonth(browser, monthDate, monthNum) {
+  const mm   = String(monthDate.getMonth() + 1).padStart(2, '0');
+  const yyyy = monthDate.getFullYear();
+  const startDateParam = `${mm}%2F01%2F${yyyy}`;
+  const url = `${QGENDA_URL}&startDate=${startDateParam}`;
+
+  console.log(`QGenda month ${monthNum}: loading ${mm}/${yyyy}…`);
   const page = await browser.newPage();
   page.setDefaultTimeout(60_000);
   await page.setUserAgent(
@@ -429,72 +434,66 @@ async function scrapeQGenda(browser) {
     '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
   );
 
-  // Intercept JSON API responses before navigation.
-  // Drop content-type filter — just try to parse any qgenda.com response as JSON.
   const apiResponses = [];
   page.on('response', async (response) => {
     try {
-      const url = response.url();
-      if (!url.includes('qgenda.com')) return;
-      if (/\.(js|css|png|jpg|gif|ico|woff2?|svg|map)(\?|$)/.test(url)) return;
+      const respUrl = response.url();
+      if (!respUrl.includes('qgenda.com')) return;
+      if (/\.(js|css|png|jpg|gif|ico|woff2?|svg|map)(\?|$)/.test(respUrl)) return;
       const text = await response.text().catch(() => '');
       const t = text.trim();
       if (!t || (t[0] !== '[' && t[0] !== '{')) return;
       const json = JSON.parse(t);
-      apiResponses.push({ url, json });
-      console.log(`  API captured: ${url.slice(0, 80)}`);
+      apiResponses.push({ url: respUrl, json });
+      console.log(`  API captured: ${respUrl.slice(0, 80)}`);
     } catch { /* skip */ }
   });
 
-  await page.goto(QGENDA_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
-  // Extra wait for Angular to render.
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60_000 });
   await new Promise(r => setTimeout(r, 4000));
 
-  const { from, to } = dateWindow();
+  const data = await extractQGendaPageData(page);
+  console.log(`QGenda month ${monthNum}: ${data.text.length} chars, ${data.tables.length} table(s)`);
 
-  // Strategy 1: API responses.
-  console.log(`QGenda: captured ${apiResponses.length} API response(s)`);
-  if (apiResponses.length > 0) {
-    const apiEntries = parseQGendaApiResponses(apiResponses, from, to);
-    if (apiEntries.length > 0) {
-      console.log(`QGenda entries from API: ${apiEntries.length}`);
-      await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
-      await page.close();
-      return apiEntries;
-    }
+  if (monthNum === 1) {
+    const html = await page.content();
+    fs.writeFileSync('qgenda-debug.html', html);
+    fs.writeFileSync('qgenda-debug.txt', data.text);
+    await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
   }
 
-  // Strategy 2: DOM/text extraction, navigating month-by-month to cover DAYS_AHEAD.
-  // QGenda shows 1 month at a time; DAYS_AHEAD=60 requires ≈2 months.
-  const allText   = [];
-  const allTables = [];
+  await page.close();
+  return { text: data.text, tables: data.tables, apiResponses };
+}
 
-  const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28); // generous upper bound
+async function scrapeQGenda(browser) {
+  const { from, to } = dateWindow();
+  const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28);
   const startMonth = new Date(from + 'T12:00:00');
-  startMonth.setDate(1); // always navigate to the 1st of the month
+  startMonth.setDate(1);
+
+  const allText        = [];
+  const allTables      = [];
+  const allApiResponses = [];
 
   for (let m = 0; m < monthsToFetch; m++) {
     const monthDate = new Date(startMonth);
     monthDate.setMonth(monthDate.getMonth() + m);
-
-    if (m > 0) {
-      const navigated = await navigateQGendaToMonth(page, monthDate);
-      if (!navigated) break;
-    }
-
-    const data = await extractQGendaPageData(page);
-    allText.push(data.text);
-    allTables.push(...data.tables);
-    console.log(`QGenda month ${m + 1}: ${data.text.length} chars, ${data.tables.length} table(s)`);
+    const result = await scrapeQGendaMonth(browser, monthDate, m + 1);
+    allText.push(result.text);
+    allTables.push(...result.tables);
+    allApiResponses.push(...result.apiResponses);
   }
 
-  // Save debug artifacts for the last rendered month.
-  const html = await page.content();
-  fs.writeFileSync('qgenda-debug.html', html);
-  fs.writeFileSync('qgenda-debug.txt', allText.join('\n---\n'));
-  await page.screenshot({ path: 'qgenda-debug.png', fullPage: true }).catch(() => {});
-
-  await page.close();
+  // Strategy 1: API responses.
+  console.log(`QGenda: captured ${allApiResponses.length} API response(s) total`);
+  if (allApiResponses.length > 0) {
+    const apiEntries = parseQGendaApiResponses(allApiResponses, from, to);
+    if (apiEntries.length > 0) {
+      console.log(`QGenda entries from API: ${apiEntries.length}`);
+      return apiEntries;
+    }
+  }
 
   const combinedText = allText.join('\n');
 
@@ -508,7 +507,7 @@ async function scrapeQGenda(browser) {
     }
   }
 
-  // Strategy 2b: Line-by-line text parsing with split-date handling.
+  // Strategy 2b: Line-by-line text parsing.
   console.log('QGenda: falling back to text parsing…');
   const textEntries = parseQGendaText(combinedText, from, to);
   console.log(`QGenda entries from text: ${textEntries.length}`);
