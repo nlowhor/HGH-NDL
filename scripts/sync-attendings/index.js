@@ -82,14 +82,11 @@ function lastName(s) {
 // Parse QGenda header text → "YYYY-MM-DD" or null.
 const MONTH_NUM = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
 function parseDateHeader(text) {
-  // Optional day-of-week prefix (full or 3-letter) handles concatenated format
-  // like "MONAPR27", "FRIDAYMAY1", "SATMAY2" where \b won't fire between letter runs.
   const m = text.match(/(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*(\d{1,2})(?:[,\s]+(\d{4}))?/i);
   if (!m) return null;
   const mon = MONTH_NUM[m[2].toLowerCase().slice(0,3)];
   const day = parseInt(m[3], 10);
   let year  = m[4] ? parseInt(m[4], 10) : new Date().getFullYear();
-  // Roll over to next year if date is far in the past.
   const probe = new Date(`${year}-${String(mon).padStart(2,'0')}-${String(day).padStart(2,'0')}`);
   if (probe < new Date(Date.now() - 90 * 86400_000)) year++;
   return `${year}-${String(mon).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
@@ -97,9 +94,6 @@ function parseDateHeader(text) {
 
 // ── QGenda API response parser ────────────────────────────────────────────────
 
-// Recursively walks any JSON value, threading parent context (date, label, time)
-// downward. Records an entry whenever a node has both a date (from self or ancestor)
-// and a staff name (in self).
 function parseQGendaApiJson(json, fromDate, toDate) {
   const entries = [];
   const seen    = new Set();
@@ -122,7 +116,6 @@ function parseQGendaApiJson(json, fromDate, toDate) {
   }
 
   function extractName(obj) {
-    // Direct name fields (camelCase + PascalCase)
     const direct = get(obj,
       'staffName', 'StaffName', 'fullName', 'FullName',
       'displayName', 'DisplayName', 'providerName', 'ProviderName',
@@ -130,7 +123,6 @@ function parseQGendaApiJson(json, fromDate, toDate) {
     );
     if (direct && typeof direct === 'string') return direct.trim();
 
-    // First + last name
     const first = get(obj, 'firstName', 'FirstName', 'staffFirstName', 'StaffFirstName', 'first', 'First');
     const last  = get(obj, 'lastName',  'LastName',  'staffLastName',  'StaffLastName',  'last',  'Last');
     if (first || last) return [first, last].filter(Boolean).join(' ').trim();
@@ -141,7 +133,6 @@ function parseQGendaApiJson(json, fromDate, toDate) {
   function extractLabel(obj) {
     const task = get(obj, 'taskName', 'TaskName', 'shiftName', 'ShiftName', 'label', 'Label',
                      'taskAbbrev', 'TaskAbbrev', 'taskDisplayName', 'TaskDisplayName') || null;
-    // QGenda may put the facility/location in a separate field — combine so OFFSITE_RE can filter it.
     const facility = get(obj,
       'facilityName', 'FacilityName', 'facilityAbbreviation', 'FacilityAbbreviation',
       'site', 'Site', 'location', 'Location', 'hospital', 'Hospital',
@@ -191,7 +182,6 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
 
   for (const { url, json } of apiResponses) {
     console.log(`  Parsing API: ${url.slice(0, 100)}`);
-    // Log first-level structure for debugging.
     if (json && typeof json === 'object') {
       const keys = Array.isArray(json)
         ? `array[${json.length}], item[0] keys: ${json[0] ? Object.keys(json[0]).slice(0,8).join(',') : 'n/a'}`
@@ -220,7 +210,6 @@ function parseQGendaTables(tables, fromDate, toDate) {
   for (const rows of tables) {
     if (rows.length < 2) continue;
 
-    // Find the header row with date-like cells.
     let headerIdx = -1;
     let colDates  = [];
     for (let i = 0; i < Math.min(rows.length, 5); i++) {
@@ -234,14 +223,9 @@ function parseQGendaTables(tables, fromDate, toDate) {
     if (headerIdx < 0) continue;
     console.log(`QGenda table: header at row ${headerIdx}, dates: ${colDates.filter(Boolean).join(', ')}`);
 
-    // Each subsequent row is a shift row; each cell has shift info for that day.
     const SHIFT_RE = /^(Backup|Day\s*[A-Z]?|PIT|Swing|Night|FST|SLH|Noc|Alameda|San\s+Leandro)/i;
     const TIME_RE  = /(\d{1,2}[ap])\s*[-–]\s*(\d{1,2}[ap])/i;
-    // Abbreviated name: "C. Bailey" — note [a-z]* (zero or more lowercase after initial).
     const NAME_RE  = /^[A-Z][a-z]*\.?\s+[A-Z][a-z'\-]+(\s+[A-Z][a-z'\-]+)?$/;
-
-    let currentLabel = '';
-    let currentTime  = '';
 
     for (let r = headerIdx + 1; r < rows.length; r++) {
       const cells = rows[r];
@@ -251,7 +235,6 @@ function parseQGendaTables(tables, fromDate, toDate) {
         const text = cells[c].text.trim();
         if (!text) continue;
 
-        // Multi-line cell: each line is a separate element.
         const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
         let cellLabel = '', cellTime = '';
         for (const line of lines) {
@@ -278,10 +261,6 @@ function parseQGendaTables(tables, fromDate, toDate) {
 
 // ── QGenda line-by-line text parser ──────────────────────────────────────────
 
-// Parses the raw innerText of the page.
-// QGenda renders each day column sequentially, so the text reads:
-//   all Mon entries → all Tue entries → … (flex/column layout)
-// Date headers are split: "MON APR" on one line, "27" on the next.
 function parseQGendaText(text, fromDate, toDate) {
   const entries = [];
   const seen    = new Set();
@@ -289,16 +268,13 @@ function parseQGendaText(text, fromDate, toDate) {
 
   const SHIFT_LABEL_RE = /^(Backup|Day\s*[A-Z]?|PIT|Swing\s*[A-Z]?|Night|Noc|FST|SLH|Alameda|San\s+Leandro)/i;
   const TIME_RE        = /^(\d{1,2}[ap])\s*[-–]\s*(\d{1,2}[ap])/i;
-  // Abbreviated name: "C. Bailey", "M. Montgomery", "A. Quinones-Rivera".
-  // [a-z]* (not +) handles single-letter initials like "C.".
   const NAME_RE        = /^[A-Z][a-z]*\.?\s+[A-Z][a-z'\-]+(\s+[A-Z][a-z'\-]+)?$/;
-  // Line has a month name but no digit → it's the first half of a split date header.
   const MONTH_ONLY_RE  = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/i;
 
   let currentDate   = null;
   let currentLabel  = '';
   let currentTime   = '';
-  let pendingMonth  = ''; // e.g. "MON APR" — waiting for day number on next line
+  let pendingMonth  = '';
 
   function addEntry(name) {
     const shift = currentTime  ? shiftFromTime(currentTime)
@@ -311,7 +287,6 @@ function parseQGendaText(text, fromDate, toDate) {
   }
 
   for (const line of lines) {
-    // ── Step 1: Try combining a pending "MON APR" with a standalone day number.
     if (pendingMonth && /^\d{1,2}$/.test(line)) {
       const d = parseDateHeader(`${pendingMonth} ${line}`);
       if (d) { currentDate = d; currentLabel = ''; currentTime = ''; }
@@ -320,26 +295,21 @@ function parseQGendaText(text, fromDate, toDate) {
     }
     pendingMonth = '';
 
-    // ── Step 2: Try to parse current line as a full or partial date.
     const d = parseDateHeader(line);
     if (d) {
       currentDate = d; currentLabel = ''; currentTime = '';
       continue;
     }
 
-    // Partial date: line has a month name but no digit.
-    // e.g. "MON APR", "SAT MAY", "FRIDAY" (no month → ignored).
     if (MONTH_ONLY_RE.test(line) && !/\d/.test(line)) {
       pendingMonth = line;
-      continue; // wait for the day number on the next line
+      continue;
     }
 
     if (!currentDate || currentDate < fromDate || currentDate > toDate) continue;
 
-    // ── Step 3: Shift label, time, or provider name.
     if (SHIFT_LABEL_RE.test(line)) {
       currentLabel = line;
-      // Extract embedded start time from label: "Day A7a - 4p" → "7a", "Night11p - 8a" → "11p".
       const tm = line.match(/(\d{1,2}[ap])\s*[-–]/i);
       currentTime = tm ? tm[1] : '';
       continue;
@@ -357,7 +327,6 @@ function parseQGendaText(text, fromDate, toDate) {
 
 // ── QGenda scraper ────────────────────────────────────────────────────────────
 
-// Extract all table data + full innerText from the current page state.
 async function extractQGendaPageData(page) {
   return page.evaluate(() => {
     const tables = [];
@@ -383,30 +352,33 @@ async function navigateQGendaToMonth(page, monthDate) {
   const dateStr = `${mm}/${dd}/${yyyy}`;
 
   try {
-    const inputSel = [
-      '.k-datepicker input',
-      'input[type="text"][class*="date"]',
-      'input[placeholder*="/"]',
-      '.input-group input[type="text"]',
-      'input[type="date"]',
-    ].join(', ');
-    await page.waitForSelector(inputSel, { timeout: 8_000 });
-    await page.click(inputSel, { clickCount: 3 });
-    await page.type(inputSel, dateStr, { delay: 50 });
+    // Find the date input by its value — QGenda uses a plain text input with
+    // no predictable class or placeholder, but it always holds MM/DD/YYYY.
+    const dateInputHandle = await page.evaluateHandle(() => {
+      const inputs = Array.from(
+        document.querySelectorAll('input[type="text"], input:not([type])')
+      );
+      return inputs.find(el => /\d{1,2}\/\d{1,2}\/\d{4}/.test(el.value)) || null;
+    });
 
-    // Find the Go button — must use a for loop; find(async cb) doesn't work
-    // because async callbacks always return a truthy Promise.
+    const el = dateInputHandle.asElement();
+    if (!el) throw new Error('date input not found by value pattern');
+
+    await el.click({ clickCount: 3 });
+    await el.type(dateStr, { delay: 50 });
+
+    // Find the Go button — use a for loop (find(async cb) doesn't work).
     let goBtn = null;
     const allBtns = await page.$$('button, input[type="submit"], input[type="button"]');
     for (const btn of allBtns) {
-      const t = await btn.evaluate(el => (el.innerText || el.value || '').trim());
+      const t = await btn.evaluate(b => (b.innerText || b.value || '').trim());
       if (/^go$/i.test(t)) { goBtn = btn; break; }
     }
 
     if (goBtn) {
       await goBtn.click();
     } else {
-      await page.keyboard.press('Enter');
+      await el.press('Enter');
     }
 
     await new Promise(r => setTimeout(r, 3000));
@@ -426,8 +398,6 @@ async function scrapeQGenda(browser) {
     '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
   );
 
-  // Intercept JSON API responses before navigation.
-  // Drop content-type filter — just try to parse any qgenda.com response as JSON.
   const apiResponses = [];
   page.on('response', async (response) => {
     try {
@@ -444,7 +414,6 @@ async function scrapeQGenda(browser) {
   });
 
   await page.goto(QGENDA_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
-  // Extra wait for Angular to render.
   await new Promise(r => setTimeout(r, 4000));
 
   const { from, to } = dateWindow();
@@ -461,14 +430,13 @@ async function scrapeQGenda(browser) {
     }
   }
 
-  // Strategy 2: DOM/text extraction, navigating month-by-month to cover DAYS_AHEAD.
-  // QGenda shows 1 month at a time; DAYS_AHEAD=60 requires ≈2 months.
+  // Strategy 2: DOM/text extraction, navigating month-by-month.
   const allText   = [];
   const allTables = [];
 
-  const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28); // generous upper bound
+  const monthsToFetch = Math.ceil((DAYS_AHEAD + 31) / 28);
   const startMonth = new Date(from + 'T12:00:00');
-  startMonth.setDate(1); // always navigate to the 1st of the month
+  startMonth.setDate(1);
 
   for (let m = 0; m < monthsToFetch; m++) {
     const monthDate = new Date(startMonth);
@@ -485,7 +453,6 @@ async function scrapeQGenda(browser) {
     console.log(`QGenda month ${m + 1}: ${data.text.length} chars, ${data.tables.length} table(s)`);
   }
 
-  // Save debug artifacts for the last rendered month.
   const html = await page.content();
   fs.writeFileSync('qgenda-debug.html', html);
   fs.writeFileSync('qgenda-debug.txt', allText.join('\n---\n'));
@@ -495,7 +462,6 @@ async function scrapeQGenda(browser) {
 
   const combinedText = allText.join('\n');
 
-  // Strategy 2a: Table parsing.
   if (allTables.length > 0) {
     console.log(`QGenda: ${allTables.length} table(s) found across all months`);
     const tableEntries = parseQGendaTables(allTables, from, to);
@@ -505,7 +471,6 @@ async function scrapeQGenda(browser) {
     }
   }
 
-  // Strategy 2b: Line-by-line text parsing with split-date handling.
   console.log('QGenda: falling back to text parsing…');
   const textEntries = parseQGendaText(combinedText, from, to);
   console.log(`QGenda entries from text: ${textEntries.length}`);
@@ -529,7 +494,6 @@ async function scrapeFacultyPhotos(browser) {
 
   await page.goto(FACULTY_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
 
-  // Wait for WordPress loading overlay to clear.
   try {
     await page.waitForFunction(
       () => {
@@ -546,7 +510,6 @@ async function scrapeFacultyPhotos(browser) {
     );
   } catch { /* spinner check timed out */ }
 
-  // Scroll to trigger lazy-loaded images.
   await page.evaluate(async () => {
     await new Promise(resolve => {
       let pos = 0;
@@ -560,7 +523,6 @@ async function scrapeFacultyPhotos(browser) {
     window.scrollTo(0, 0);
   });
 
-  // Save debug HTML.
   const html = await page.content();
   fs.writeFileSync('faculty-debug.html', html);
   await page.screenshot({ path: 'faculty-debug.png', fullPage: true }).catch(() => {});
@@ -572,17 +534,14 @@ async function scrapeFacultyPhotos(browser) {
       try { return new URL(src || '', facultyUrl).href; } catch { return ''; }
     }
 
-    // Find the best image src for an element (prefers data-src for lazy images).
     function bestSrc(el) {
       for (const img of el.querySelectorAll('img')) {
         const src = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') ||
                     img.getAttribute('src') || '';
         if (!src || src.startsWith('data:') || src.endsWith('.svg') || src.includes('placeholder')) continue;
-        // Skip tiny icons (<50px natural width if known).
         if (img.naturalWidth > 0 && img.naturalWidth < 50) continue;
         return absUrl(src);
       }
-      // CSS background-image fallback.
       for (const node of [el, ...el.querySelectorAll('[style*="background"]')]) {
         const bg = (node.getAttribute('style') || '') + window.getComputedStyle(node).backgroundImage;
         const m  = bg.match(/url\(["']?([^"')]+)["']?\)/);
@@ -754,7 +713,6 @@ async function getAuth() {
 
 // ── Google Sheets write ───────────────────────────────────────────────────────
 
-// Shifts at these locations are not Highland shifts — exclude from the roster.
 const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO)/i;
 
 async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
