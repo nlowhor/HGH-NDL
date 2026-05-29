@@ -216,13 +216,21 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
     }
   }
 
+  // Dump all captured API responses for debugging.
+  const apiDump = apiResponses.map(({ url, json }) => ({ url, json }));
+  fs.writeFileSync('qgenda-api-dump.json', JSON.stringify(apiDump, null, 2));
+  console.log(`  Dumped ${apiDump.length} API responses to qgenda-api-dump.json`);
+
   // Parse GetQuickLinkScheduleDisplay items using the lookup maps.
   for (const { url, json } of apiResponses) {
-    if (!url.includes('GetQuickLinkScheduleDisplay') && !url.includes('ScheduleDisplay')) continue;
+    const isSchedule = url.includes('GetQuickLinkScheduleDisplay') || url.includes('ScheduleDisplay') || url.includes('ScheduleView');
+    console.log(`  Checking URL for schedule match (${isSchedule}): ${url.slice(0, 100)}`);
+    if (!isSchedule) continue;
     if (!json || typeof json !== 'object' || Array.isArray(json)) continue;
 
     const items = json.items || json.Items || [];
     console.log(`  ScheduleDisplay items: ${items.length}, staffMap size: ${Object.keys(staffMap).length}`);
+    console.log(`    Top-level keys: ${Object.keys(json).slice(0, 12).join(', ')}`);
     if (items.length > 0) {
       console.log(`    Item[0] keys: ${Object.keys(items[0]).slice(0, 12).join(', ')}`);
       fs.writeFileSync('qgenda-api-item0.json', JSON.stringify(items[0], null, 2));
