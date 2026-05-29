@@ -1,0 +1,6 @@
+node_modules/
+package-lock.json
+*-debug.html
+*-debug.png
+*-debug.txt
+*-api-*.json
