@@ -228,14 +228,13 @@ async function fetchStudentSchedule() {
   const fromIso = from.toISOString().slice(0, 10);
   const toIso   = to.toISOString().slice(0, 10);
 
-  // Base URL without gid — fetch each block tab by GID.
-  // Add new block GIDs here as new blocks are created each year.
-  const baseUrl = STUDENT_SCHEDULE_CSV_URL.replace(/[?&]gid=[^&]*/, '');
+  const SCHEDULE_BASE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSm3KBhIKMDOIbhgrZxqCT963rMssxTyh9vzDZiLxy4vbPWX-8A5luNoyKhSbDT3gJU5vMat8Bo552j/pub';
+  // Add new block GIDs here each year, or override via STUDENT_SCHEDULE_GIDS env var.
   const gids = (process.env.STUDENT_SCHEDULE_GIDS || '1506284669,1930360382').split(',').map(g => g.trim());
 
   let allEntries = [];
   for (const gid of gids) {
-    const url = `${baseUrl}&gid=${gid}`;
+    const url = `${SCHEDULE_BASE_URL}?gid=${gid}&single=true&output=csv`;
     console.log(`Fetching student schedule tab gid=${gid}…`);
     try {
       const res = await fetch(url);
