@@ -939,7 +939,7 @@ async function getAuth() {
 // ── Google Sheets write ───────────────────────────────────────────────────────
 
 // Shifts at these locations are not Highland shifts — exclude from the roster.
-const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO|AH\s+APP)/i;
+const OFFSITE_RE = /\b(San\s+Leandro|SLH|Alameda|CHO|AH)\b/i;
 
 async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
   const { byFull, byLast, displayByLast, savedPhotos } = photos;

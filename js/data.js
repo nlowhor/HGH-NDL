@@ -8,10 +8,10 @@ import { fetchSheetRoster } from "./sources/sheet.js";
 import { fetchDocRoster } from "./sources/doc.js";
 import { fetchWebsiteRoster } from "./sources/web.js";
 
-const OFFSITE_KEYWORDS = ["san leandro", "slh", "alameda", "cho", "ah app"];
+const OFFSITE_RE = /\b(san\s+leandro|slh|alameda|cho|ah)\b/i;
 function isOffsite(r) {
-  const text = [r.name, r.title, r.notes].filter(Boolean).join(" ").toLowerCase();
-  return OFFSITE_KEYWORDS.some((kw) => text.includes(kw));
+  const text = [r.name, r.title, r.notes].filter(Boolean).join(" ");
+  return OFFSITE_RE.test(text);
 }
 function isBackupRow(r) {
   return /backup/i.test(r.notes || "");
