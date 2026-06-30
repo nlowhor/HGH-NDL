@@ -283,7 +283,8 @@ async function getAuth() {
   });
 }
 
-async function writeStudentsToSheet(auth, spreadsheetId, entries) {
+async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
+  const { byFullName = new Map(), byLastName = new Map() } = photos || {};
   const sheets = google.sheets({ version: 'v4', auth });
 
   const headerRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${ROSTER_TAB}!1:1` });
@@ -398,9 +399,13 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
         mnValue = keptManualMN[keptIdx] || mnFormula;
         mpValue = keptManualMP[keptIdx] || mpFormula;
       } else {
-        const key = String(newRows[i - keptDataLen][nameCol] || '').toLowerCase();
-        mnValue = savedMatched[key] || mnFormula;
-        mpValue = savedPhotos[key]  || mpFormula;
+        const scheduleName = String(newRows[i - keptDataLen][nameCol] || '').trim();
+        const key = scheduleName.toLowerCase();
+        // Try to resolve via Airtable: full name match, then last-word (last name) match.
+        const lastWord = scheduleName.split(/\s+/).pop().toLowerCase();
+        const airtable = byFullName.get(normalizeName(scheduleName)) || byLastName.get(lastWord);
+        mnValue = savedMatched[key] || (airtable ? airtable.name  : mnFormula);
+        mpValue = savedPhotos[key]  || (airtable ? airtable.url   : mpFormula);
       }
       mnValues.push([mnValue]);
       mpValues.push([mpValue]);
@@ -651,7 +656,7 @@ async function main() {
 
   const spreadsheetId = process.env.CANONICAL_SHEET_ID;
   const [n] = await Promise.all([
-    writeStudentsToSheet(auth, spreadsheetId, entries),
+    writeStudentsToSheet(auth, spreadsheetId, entries, photos),
     writeStudentsTab(auth, spreadsheetId, photos),
   ]);
   console.log(`\nDone. ${n} student shift rows written to roster.`);
