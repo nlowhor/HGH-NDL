@@ -230,7 +230,7 @@ async function fetchStudentSchedule() {
 
   const SCHEDULE_BASE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSm3KBhIKMDOIbhgrZxqCT963rMssxTyh9vzDZiLxy4vbPWX-8A5luNoyKhSbDT3gJU5vMat8Bo552j/pub';
   // Add new block GIDs here each year, or override via STUDENT_SCHEDULE_GIDS env var.
-  const gids = (process.env.STUDENT_SCHEDULE_GIDS || '1506284669,1930360382').split(',').map(g => g.trim());
+  const gids = (process.env.STUDENT_SCHEDULE_GIDS || '1506284669,1930360382,758292113').split(',').map(g => g.trim());
 
   let allEntries = [];
   for (const gid of gids) {
