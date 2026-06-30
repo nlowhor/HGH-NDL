@@ -487,7 +487,13 @@ async function fetchStudentPhotos() {
       const res = await fetch(url.toString(), { headers });
       if (!res.ok) { console.warn('Student Roster fetch failed:', res.status); break; }
       const data = await res.json();
+      let loggedRoster = false;
       for (const r of data.records || []) {
+        if (!loggedRoster) {
+          console.log('Student Roster fields:', Object.keys(r.fields).join(', '));
+          console.log('Student Roster first record values:', Object.entries(r.fields).slice(0, 8).map(([k,v]) => `"${k}": ${JSON.stringify(v).slice(0,60)}`).join(', '));
+          loggedRoster = true;
+        }
         const name = extractAirtableName(r.fields);
         if (name) rosterById.set(r.id, name);
       }
