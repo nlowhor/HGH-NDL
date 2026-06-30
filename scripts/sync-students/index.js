@@ -36,6 +36,13 @@ const DAYS_AHEAD   = 60;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Sort words so "James Smith" and "Smith James" normalise the same way.
+function normalizeName(s) {
+  return String(s || '').toLowerCase().trim()
+    .replace(/[,_\-]+/g, ' ')
+    .split(/\s+/).filter(Boolean).sort().join(' ');
+}
+
 const SHIFT_LABEL_MAP = {
   'RN DAY':     { shift: 'day',     notes: 'RN Day' },
   'DAY-BUP':    { shift: 'day',     notes: 'Day-BUP' },
