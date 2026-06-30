@@ -404,6 +404,9 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
         // Try to resolve via Airtable: full name match, then last-word (last name) match.
         const lastWord = scheduleName.split(/\s+/).pop().toLowerCase();
         const airtable = byFullName.get(normalizeName(scheduleName)) || byLastName.get(lastWord);
+        if (i - keptDataLen < 5) {
+          console.log(`  [match] "${scheduleName}" → lastWord="${lastWord}" airtable="${airtable ? airtable.name : 'none'}"`);
+        }
         mnValue = savedMatched[key] || (airtable ? airtable.name  : mnFormula);
         mpValue = savedPhotos[key]  || (airtable ? airtable.url   : mpFormula);
       }
@@ -520,8 +523,14 @@ async function fetchStudentPhotos() {
       // Try all common linked-record field names pointing to the Student Roster.
       const linkedArr = fields['Student Roster copy'] || fields['Student Roster'] || fields['Student'] || [];
       const linkedId = Array.isArray(linkedArr) ? linkedArr[0] : null;
-      const name = (linkedId && rosterById.get(linkedId)) || extractAirtableName(fields);
+      const rosterName = linkedId && rosterById.get(linkedId);
+      const fallbackName = extractAirtableName(fields);
+      const name = rosterName || fallbackName;
       if (!name) continue;
+
+      if (byFullName.size < 5) {
+        console.log(`  [debug] linkedId=${linkedId}, rosterName="${rosterName}", fallbackName="${fallbackName}", using="${name}"`);
+      }
 
       const entry = { name, url: photoUrl };
       byFullName.set(normalizeName(name), entry);
@@ -533,6 +542,7 @@ async function fetchStudentPhotos() {
   } while (offset);
 
   console.log(`Airtable: ${byFullName.size} student photo(s) fetched.`);
+  console.log(`  byLastName keys (first 10):`, Array.from(byLastName.keys()).slice(0, 10).join(', '));
   return { byFullName, byLastName };
 }
 
