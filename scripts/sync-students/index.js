@@ -511,7 +511,10 @@ async function fetchStudentPhotos() {
       if (!photoEntry) continue;
       const photoUrl = photoEntry[1][0].thumbnails?.large?.url || photoEntry[1][0].url;
 
-      const linkedId = Array.isArray(fields['Student']) ? fields['Student'][0] : null;
+      // "Student Roster copy" is the linked-record field in the Welcome Form table.
+      // Try all common linked-record field names pointing to the Student Roster.
+      const linkedArr = fields['Student Roster copy'] || fields['Student Roster'] || fields['Student'] || [];
+      const linkedId = Array.isArray(linkedArr) ? linkedArr[0] : null;
       const name = (linkedId && rosterById.get(linkedId)) || extractAirtableName(fields);
       if (!name) continue;
 
