@@ -5,17 +5,24 @@
  * --------------------------
  * Reads rotation-block tabs from the student clerkship schedule Google Sheet
  * (visual calendar layout) and writes student shift rows to the roster tab
- * of the canonical Google Sheet.
- *
- * Person data (display name, photo_url, title) lives in the "students" tab
- * and is managed manually — this script never touches that tab.
+ * of the canonical Google Sheet. Also syncs the students person-data tab
+ * from Airtable (names + headshots) so matched_name formulas resolve.
  *
  * Required env vars:
  *   CANONICAL_SHEET_ID          – roster sheet to write to
  *   GOOGLE_SERVICE_ACCOUNT_JSON – service account credentials
+ * Optional:
+ *   AIRTABLE_API_KEY            – Airtable personal access token (for photos)
+ *   AIRTABLE_TABLE              – table name/ID (auto-detected if omitted)
+ *   GITHUB_TOKEN / GITHUB_REPOSITORY / GITHUB_REF_NAME – for photo persistence
  */
 
 const { google } = require('googleapis');
+const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
+
+const AIRTABLE_BASE_ID = 'appXHrYewBeH8Rwmh';
+const AIRTABLE_API     = 'https://api.airtable.com/v0';
+const STUDENTS_TAB     = 'students';
 
 // Published CSV of the student clerkship schedule Google Sheet.
 // Override with STUDENT_SCHEDULE_CSV_URL env var if the URL changes.
@@ -409,15 +416,234 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries) {
   return newRows.length;
 }
 
+// ── Airtable — fetch student names + photos ───────────────────────────────────
+
+// Extract full name from various Airtable field layouts.
+function extractAirtableName(fields) {
+  for (const [k, v] of Object.entries(fields)) {
+    if (!/name/i.test(k)) continue;
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (Array.isArray(v) && typeof v[0] === 'string') return v[0].trim();
+  }
+  // Fallback: first string field that looks like a name (two words, Title Case).
+  for (const v of Object.values(fields)) {
+    if (typeof v === 'string' && /^[A-Z][a-z]+ [A-Z]/.test(v.trim())) return v.trim();
+  }
+  return null;
+}
+
+async function fetchStudentPhotos() {
+  const apiKey = process.env.AIRTABLE_API_KEY;
+  if (!apiKey) {
+    console.warn('AIRTABLE_API_KEY not set — skipping Airtable photo fetch.');
+    return { byFullName: new Map(), byLastName: new Map() };
+  }
+
+  const headers = { Authorization: `Bearer ${apiKey}` };
+
+  let tableId = process.env.AIRTABLE_TABLE;
+  let rosterTableId = null;
+
+  if (!tableId) {
+    console.log('AIRTABLE_TABLE not set — auto-discovering via metadata API…');
+    const metaRes = await fetch(`${AIRTABLE_API}/meta/bases/${AIRTABLE_BASE_ID}/tables`, { headers });
+    if (!metaRes.ok) throw new Error(`Airtable metadata ${metaRes.status}: ${await metaRes.text()}`);
+    const { tables } = await metaRes.json();
+    console.log(`Tables: ${tables.map(t => t.name).join(', ')}`);
+
+    const photoRe = /photo|headshot|image|picture|portrait/i;
+    let table = tables.find(t => t.fields.some(f => f.type === 'multipleAttachments' && photoRe.test(f.name)));
+    if (!table) table = tables.find(t => t.fields.some(f => f.type === 'multipleAttachments'));
+    if (!table) throw new Error(`Could not find a photo table. Set AIRTABLE_TABLE env var.`);
+    tableId = table.id;
+    console.log(`Auto-discovered photo table: "${table.name}"`);
+
+    const rosterTable = tables.find(t => /student.roster/i.test(t.name));
+    if (rosterTable) { rosterTableId = rosterTable.id; console.log(`Found Student Roster table: "${rosterTable.name}"`); }
+  }
+
+  // Build recordId → full name map from Student Roster table (for linked-record lookups).
+  const rosterById = new Map();
+  if (rosterTableId) {
+    let offset;
+    do {
+      const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${encodeURIComponent(rosterTableId)}`);
+      if (offset) url.searchParams.set('offset', offset);
+      const res = await fetch(url.toString(), { headers });
+      if (!res.ok) { console.warn('Student Roster fetch failed:', res.status); break; }
+      const data = await res.json();
+      for (const r of data.records || []) {
+        const name = extractAirtableName(r.fields);
+        if (name) rosterById.set(r.id, name);
+      }
+      offset = data.offset;
+    } while (offset);
+    console.log(`Student Roster: ${rosterById.size} name(s).`);
+  }
+
+  const byFullName = new Map();
+  const byLastName = new Map();
+  let offset;
+  let loggedFields = false;
+
+  do {
+    const url = new URL(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableId)}`);
+    if (offset) url.searchParams.set('offset', offset);
+    const res = await fetch(url.toString(), { headers });
+    if (!res.ok) throw new Error(`Airtable records ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+
+    for (const record of data.records || []) {
+      const fields = record.fields;
+      if (!loggedFields) {
+        console.log('Airtable fields:', Object.keys(fields).join(', '));
+        loggedFields = true;
+      }
+
+      const photoEntry = Object.entries(fields).find(([, v]) => Array.isArray(v) && v[0]?.url);
+      if (!photoEntry) continue;
+      const photoUrl = photoEntry[1][0].thumbnails?.large?.url || photoEntry[1][0].url;
+
+      const linkedId = Array.isArray(fields['Student']) ? fields['Student'][0] : null;
+      const name = (linkedId && rosterById.get(linkedId)) || extractAirtableName(fields);
+      if (!name) continue;
+
+      const entry = { name, url: photoUrl };
+      byFullName.set(normalizeName(name), entry);
+      for (const word of name.toLowerCase().split(/\s+/)) {
+        if (word.length > 2) byLastName.set(word, entry);
+      }
+    }
+    offset = data.offset;
+  } while (offset);
+
+  console.log(`Airtable: ${byFullName.size} student photo(s) fetched.`);
+  return { byFullName, byLastName };
+}
+
+// Persist Airtable photo URLs to GitHub Pages so they don't expire.
+async function persistPhotosToPages(photos) {
+  if (!process.env.GITHUB_TOKEN) {
+    console.warn('GITHUB_TOKEN not set — skipping photo persistence (Airtable URLs may expire).');
+    return photos;
+  }
+  const { byFullName, byLastName } = photos;
+  let persisted = 0, skipped = 0;
+  for (const [key, entry] of byFullName) {
+    if (!isAirtableUrl(entry.url)) { skipped++; continue; }
+    try {
+      entry.url = await ensurePhotoInPages(key.replace(/ /g, '-'), entry.url, 'photos/students');
+      persisted++;
+    } catch (err) {
+      console.warn(`  Photo persistence failed for ${entry.name}:`, err.message);
+    }
+  }
+  console.log(`Photos persisted: ${persisted} stored, ${skipped} already permanent.`);
+  return { byFullName, byLastName };
+}
+
+// Update the `students` person-data tab with names and photos from Airtable.
+// Preserves any manually-edited rows. schedule_name defaults to the Airtable
+// display name (= what appears in the schedule) and is never overwritten.
+async function writeStudentsTab(auth, spreadsheetId, photos) {
+  const { byFullName } = photos;
+  if (!byFullName.size) { console.log('No Airtable photos — skipping students tab update.'); return; }
+
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const existing = meta.data.sheets.find(s => s.properties.title === STUDENTS_TAB);
+  if (!existing) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title: STUDENTS_TAB } } }] },
+    });
+    console.log(`Created "${STUDENTS_TAB}" tab.`);
+  }
+
+  const existingByName = new Map();
+  if (existing) {
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: STUDENTS_TAB });
+    const vals = res.data.values || [];
+    if (vals.length > 1) {
+      const hdrs = vals[0].map(h => String(h).toLowerCase().trim());
+      const ni = hdrs.indexOf('name'), pi = hdrs.indexOf('photo_url'),
+            ti = hdrs.indexOf('title'), xi = hdrs.indexOf('notes'),
+            si = hdrs.indexOf('schedule_name');
+      for (let i = 1; i < vals.length; i++) {
+        const r = vals[i];
+        const name = (r[ni] || '').trim();
+        if (!name) continue;
+        existingByName.set(normalizeName(name), {
+          name,
+          photo_url:     pi >= 0 ? (r[pi] || '').trim() : '',
+          title:         ti >= 0 ? (r[ti] || '').trim() : '',
+          notes:         xi >= 0 ? (r[xi] || '').trim() : '',
+          schedule_name: si >= 0 ? (r[si] || '').trim() : '',
+        });
+      }
+    }
+  }
+
+  const merged = new Map(existingByName);
+  for (const [, entry] of byFullName) {
+    const key = normalizeName(entry.name);
+    const ex  = existingByName.get(key) || {};
+    const useNewPhoto = !ex.photo_url || /airtable\.com|airtableusercontent\.com/i.test(ex.photo_url);
+    merged.set(key, {
+      name:          entry.name,
+      photo_url:     useNewPhoto ? (entry.url || ex.photo_url || '') : ex.photo_url,
+      title:         ex.title || '',
+      notes:         ex.notes || '',
+      schedule_name: ex.schedule_name || entry.name,
+    });
+  }
+  for (const [key, ex] of existingByName) {
+    if (!merged.has(key)) merged.set(key, { ...ex, schedule_name: ex.schedule_name || ex.name || key });
+  }
+
+  const rows = [
+    ['name', 'photo_url', 'title', 'notes', 'schedule_name'],
+    ...Array.from(merged.values())
+      .filter(e => e.name)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(e => [e.name, e.photo_url, e.title, e.notes, e.schedule_name]),
+  ];
+
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range: STUDENTS_TAB });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${STUDENTS_TAB}!A1`, valueInputOption: 'RAW',
+    requestBody: { values: rows },
+  });
+  console.log(`"${STUDENTS_TAB}" tab: wrote ${rows.length - 1} student record(s).`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
   if (!process.env.CANONICAL_SHEET_ID)          throw new Error('CANONICAL_SHEET_ID env var is required.');
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env var is required.');
 
-  const auth    = await getAuth();
-  const entries = await fetchStudentSchedule();
-  const n       = await writeStudentsToSheet(auth, process.env.CANONICAL_SHEET_ID, entries);
+  const auth = await getAuth();
+
+  const [entries, rawPhotos] = await Promise.all([
+    fetchStudentSchedule(),
+    fetchStudentPhotos().catch(err => {
+      console.warn('Airtable fetch failed (continuing without photos):', err.message);
+      return { byFullName: new Map(), byLastName: new Map() };
+    }),
+  ]);
+
+  const photos = await persistPhotosToPages(rawPhotos).catch(err => {
+    console.warn('Photo persistence failed (using Airtable URLs directly):', err.message);
+    return rawPhotos;
+  });
+
+  const spreadsheetId = process.env.CANONICAL_SHEET_ID;
+  const [n] = await Promise.all([
+    writeStudentsToSheet(auth, spreadsheetId, entries),
+    writeStudentsTab(auth, spreadsheetId, photos),
+  ]);
   console.log(`\nDone. ${n} student shift rows written to roster.`);
 }
 

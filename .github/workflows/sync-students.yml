@@ -6,7 +6,7 @@ on:
   workflow_dispatch:        # Allow manual trigger from Actions tab
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   sync:
@@ -36,4 +36,8 @@ jobs:
           CANONICAL_SHEET_ID:           ${{ secrets.CANONICAL_SHEET_ID }}
           STUDENT_SCHEDULE_SHEET_ID:    ${{ secrets.STUDENT_SCHEDULE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON:  ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          AIRTABLE_API_KEY:             ${{ secrets.AIRTABLE_API_KEY }}
+          GITHUB_TOKEN:                 ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:            ${{ github.repository }}
+          GITHUB_REF_NAME:              live
         run: node index.js
