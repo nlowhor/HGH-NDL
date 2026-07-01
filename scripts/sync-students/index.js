@@ -433,7 +433,18 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
 
 // ── Airtable — fetch student names + photos ───────────────────────────────────
 
-// Extract full name from various Airtable field layouts.
+// Extract full name from a Student Roster record.
+// Prefers the dedicated "Full Name" field; falls back to First + Last Name.
+function extractRosterName(fields) {
+  const full = (fields['Full Name'] || '').trim();
+  if (full) return full;
+  const first = (fields['First Name'] || '').trim();
+  const last  = (fields['Last Name']  || '').trim();
+  if (first && last) return `${first} ${last}`;
+  return first || last || null;
+}
+
+// Extract full name from a Welcome Form or generic Airtable record.
 function extractAirtableName(fields) {
   for (const [k, v] of Object.entries(fields)) {
     if (!/name/i.test(k)) continue;
@@ -494,7 +505,7 @@ async function fetchStudentPhotos() {
           console.log('Student Roster first record values:', Object.entries(r.fields).slice(0, 8).map(([k,v]) => `"${k}": ${JSON.stringify(v).slice(0,60)}`).join(', '));
           loggedRoster = true;
         }
-        const name = extractAirtableName(r.fields);
+        const name = extractRosterName(r.fields);
         if (name) rosterById.set(r.id, name);
       }
       offset = data.offset;
