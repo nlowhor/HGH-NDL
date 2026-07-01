@@ -403,7 +403,10 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
         const key = scheduleName.toLowerCase();
         // Try to resolve via Airtable: full name match, then last-word (last name) match.
         const lastWord = scheduleName.split(/\s+/).pop().toLowerCase();
-        const airtable = byFullName.get(normalizeName(scheduleName)) || byLastName.get(lastWord);
+        // Try full lastWord, then each hyphen-segment (handles "Hernandez" matching "Hernandez-Romero")
+        const airtable = byFullName.get(normalizeName(scheduleName))
+          || byLastName.get(lastWord)
+          || lastWord.split('-').filter(p => p.length > 2).reduce((f, p) => f || byLastName.get(p), null);
         if (i - keptDataLen < 5) {
           console.log(`  [match] "${scheduleName}" → lastWord="${lastWord}" airtable="${airtable ? airtable.name : 'none'}"`);
         }
@@ -553,6 +556,10 @@ async function fetchStudentPhotos() {
       byFullName.set(normalizeName(name), entry);
       for (const word of name.toLowerCase().split(/\s+/)) {
         if (word.length > 2) byLastName.set(word, entry);
+        // also index each hyphen-segment so "Hernandez" matches "Hernandez-Romero"
+        for (const seg of word.split('-')) {
+          if (seg.length > 2) byLastName.set(seg, entry);
+        }
       }
     }
     offset = data.offset;
