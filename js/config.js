@@ -23,6 +23,12 @@ export const config = {
     { key: "student",   label: "Medical Students" },
   ],
 
+  // People who should NEVER appear on the board, matched case-insensitively
+  // against whole words of the roster name. Use a full name ("james nelson")
+  // to hide one specific person; a single word ("nelson") hides EVERYONE
+  // whose name contains that word — avoid single words unless intentional.
+  excludedNames: ["nelson"],
+
   // Refresh interval for the clock + "now" recomputation (ms).
   tickIntervalMs: 30_000,
   // How often to re-fetch source data (ms).

@@ -17,6 +17,7 @@
 
 const puppeteer  = require('puppeteer');
 const { google } = require('googleapis');
+const { writeRepoJson } = require('../lib/github-photos');
 
 const MEDREZ_GROUP = '9s733y77k';
 const MEDREZ_URL   = `https://www.medrez.net/view.php?a=${MEDREZ_GROUP}`;
@@ -319,6 +320,12 @@ async function main() {
   const auth   = await getAuth();
   const sheets = google.sheets({ version: 'v4', auth });
   const n      = await writeResidentsToSheet(sheets, spreadsheetId, entries);
+
+  await writeRepoJson('data/sync-status-resident.json',
+    { role: 'resident', updated_at: new Date().toISOString(), rows: n },
+    'chore: update resident sync status'
+  ).catch(err => console.warn('Sync status write failed:', err.message));
+
   console.log(`\nDone. ${n} resident shift rows written to roster.`);
 }
 

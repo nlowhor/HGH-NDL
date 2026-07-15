@@ -21,10 +21,15 @@ function isRnRow(r) {
   return r.role === "student" && /\brn\b/i.test([r.title, r.notes, r.name].filter(Boolean).join(" "));
 }
 
-// Names (case-insensitive word match) that should never appear in the roster.
-const EXCLUDED_NAME_WORDS = ["nelson"];
+// Names that should never appear on the board — configured in js/config.js.
+// A multi-word entry ("james nelson") must match ALL its words; a single-word
+// entry ("nelson") matches any name containing that word.
 function isExcludedName(r) {
-  return r.name.toLowerCase().split(/\s+/).some(w => EXCLUDED_NAME_WORDS.includes(w));
+  const words = r.name.toLowerCase().split(/\s+/);
+  return (config.excludedNames || []).some(entry => {
+    const parts = String(entry).toLowerCase().split(/\s+/).filter(Boolean);
+    return parts.length > 0 && parts.every(p => words.includes(p));
+  });
 }
 
 // Sort words so "James Nelson" and "Nelson James" both normalise the same way.
@@ -178,24 +183,20 @@ export function rosterForShift(rows, instance) {
   return rows.filter((r) => r.date === instance.date && r.shift === instance.name);
 }
 
-// Returns last-synced timestamps per role by reading the sync_log CSV if
-// configured, or falls back to nulls (displayed as "never synced").
+// Returns last-synced timestamps per role by reading the data/sync-status-*.json
+// files that each sync workflow commits to this repo. Roles whose file is
+// missing or unreadable come back as null (displayed as "never synced").
 export async function loadSyncLog() {
-  const url = config.sources?.syncLogCsvUrl;
-  if (!url) return { attending: null, resident: null, student: null };
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return { attending: null, resident: null, student: null };
-    const text = await res.text();
-    const log = { attending: null, resident: null, student: null };
-    for (const line of text.split('\n').slice(1)) {
-      const [role, ts] = line.split(',').map(s => s.trim());
-      if (role && ts && log[role] !== undefined) log[role] = new Date(ts);
-    }
-    return log;
-  } catch {
-    return { attending: null, resident: null, student: null };
-  }
+  const log = { attending: null, resident: null, student: null };
+  await Promise.all(Object.keys(log).map(async (role) => {
+    try {
+      const res = await fetch(cacheBust(`data/sync-status-${role}.json`), { cache: 'no-store' });
+      if (!res.ok) return;
+      const j = await res.json();
+      if (j.updated_at) log[role] = new Date(j.updated_at);
+    } catch { /* leave null */ }
+  }));
+  return log;
 }
 
 const SUB_SHIFT_RE  = /fast.?track|\bft\b|[a-z][- ]?swing|pit\b/i;

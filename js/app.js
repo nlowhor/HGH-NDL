@@ -2,7 +2,7 @@
 // for the selected time, update clock, and handle user interactions.
 
 import { config } from "./config.js";
-import { loadAllRosters, rosterForShift, groupByRole } from "./data.js";
+import { loadAllRosters, loadSyncLog, rosterForShift, groupByRole } from "./data.js";
 import { shiftAt, nextShiftAfter, prevShiftBefore, describeShift, shiftStartDate } from "./shifts.js";
 
 function hasLiveSource() {
@@ -494,6 +494,28 @@ async function reload() {
     state.diagnostics = [{ name: "loader", ok: false, error: String(err) }];
   }
   render();
+  renderSyncStatus();
+}
+
+// Show when each data feed last synced; highlight anything stale (>36h) so
+// a broken sync is visible on the board instead of failing silently.
+const STALE_MS = 36 * 60 * 60 * 1000;
+async function renderSyncStatus() {
+  const el = document.getElementById("sync-status");
+  if (!el) return;
+  const log = await loadSyncLog();
+  const labels = { attending: "Attendings", resident: "Residents", student: "Students" };
+  const parts = [];
+  let anyStale = false;
+  for (const [role, label] of Object.entries(labels)) {
+    const ts = log[role];
+    if (!ts || isNaN(ts)) { parts.push(`${label}: no sync data`); continue; }
+    const stale = Date.now() - ts.getTime() > STALE_MS;
+    if (stale) anyStale = true;
+    parts.push(`${label}: ${ts.toLocaleDateString()} ${ts.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}${stale ? " ⚠ STALE" : ""}`);
+  }
+  el.textContent = `Data last updated — ${parts.join(" · ")}`;
+  el.classList.toggle("sync-status--warn", anyStale);
 }
 
 // ---------- Wiring ----------

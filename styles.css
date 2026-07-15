@@ -449,3 +449,12 @@ main {
   margin-left: 6px;
 }
 .badge.warn { color: var(--warn); border-color: var(--warn); }
+
+.sync-status {
+  margin-top: 10px;
+  padding: 4px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+.sync-status--warn { color: var(--warn); font-weight: 600; }

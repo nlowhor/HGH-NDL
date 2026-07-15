@@ -18,7 +18,7 @@
  */
 
 const { google } = require('googleapis');
-const { ensurePhotoInPages, isAirtableUrl } = require('../lib/github-photos');
+const { ensurePhotoInPages, isAirtableUrl, writeRepoJson } = require('../lib/github-photos');
 
 const AIRTABLE_BASE_ID = 'appXHrYewBeH8Rwmh';
 const AIRTABLE_API     = 'https://api.airtable.com/v0';
@@ -235,6 +235,27 @@ function parseScheduleTab(rows, tabName) {
 
 // ── CSV — read student schedule ───────────────────────────────────────────────
 
+// Auto-discover every tab (gid) in the published schedule spreadsheet so new
+// rotation blocks are picked up without editing this script. The published
+// HTML page lists every tab either as items.push({name:…, gid:"123"}) in a
+// script block or as <li id="sheet-button-123"> elements.
+async function discoverScheduleTabs(baseUrl) {
+  try {
+    const res = await fetch(`${baseUrl}html`);
+    if (!res.ok) { console.warn(`Tab discovery: HTTP ${res.status}`); return []; }
+    const html = await res.text();
+    const gids = new Set();
+    for (const m of html.matchAll(/gid[":= ]+["']?(\d{6,})/g)) gids.add(m[1]);
+    for (const m of html.matchAll(/sheet-button-(\d+)/g)) gids.add(m[1]);
+    const list = Array.from(gids);
+    console.log(`Tab discovery: found ${list.length} tab(s): ${list.join(', ')}`);
+    return list;
+  } catch (err) {
+    console.warn('Tab discovery failed:', err.message);
+    return [];
+  }
+}
+
 async function fetchStudentSchedule() {
   const today   = new Date();
   const from    = new Date(today); from.setDate(from.getDate() - DAYS_BEHIND);
@@ -243,8 +264,19 @@ async function fetchStudentSchedule() {
   const toIso   = to.toISOString().slice(0, 10);
 
   const SCHEDULE_BASE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSm3KBhIKMDOIbhgrZxqCT963rMssxTyh9vzDZiLxy4vbPWX-8A5luNoyKhSbDT3gJU5vMat8Bo552j/pub';
-  // Add new block GIDs here each year, or override via STUDENT_SCHEDULE_GIDS env var.
-  const gids = (process.env.STUDENT_SCHEDULE_GIDS || '1506284669,1930360382,758292113').split(',').map(g => g.trim());
+  // Known block GIDs, used as a fallback when tab auto-discovery fails.
+  // Override with STUDENT_SCHEDULE_GIDS env var to pin a specific list.
+  const FALLBACK_GIDS = '1506284669,1930360382,758292113';
+  let gids;
+  if (process.env.STUDENT_SCHEDULE_GIDS) {
+    gids = process.env.STUDENT_SCHEDULE_GIDS.split(',').map(g => g.trim());
+  } else {
+    gids = await discoverScheduleTabs(SCHEDULE_BASE_URL);
+    if (!gids.length) {
+      console.warn('Tab auto-discovery found nothing — falling back to known GIDs.');
+      gids = FALLBACK_GIDS.split(',');
+    }
+  }
 
   let allEntries = [];
   for (const gid of gids) {
@@ -407,9 +439,6 @@ async function writeStudentsToSheet(auth, spreadsheetId, entries, photos) {
         const airtable = byFullName.get(normalizeName(scheduleName))
           || byLastName.get(lastWord)
           || lastWord.split('-').filter(p => p.length > 2).reduce((f, p) => f || byLastName.get(p), null);
-        if (i - keptDataLen < 5) {
-          console.log(`  [match] "${scheduleName}" → lastWord="${lastWord}" airtable="${airtable ? airtable.name : 'none'}"`);
-        }
         mnValue = savedMatched[key] || (airtable ? airtable.name  : mnFormula);
         mpValue = savedPhotos[key]  || (airtable ? airtable.url   : mpFormula);
       }
@@ -501,13 +530,7 @@ async function fetchStudentPhotos() {
       const res = await fetch(url.toString(), { headers });
       if (!res.ok) { console.warn('Student Roster fetch failed:', res.status); break; }
       const data = await res.json();
-      let loggedRoster = false;
       for (const r of data.records || []) {
-        if (!loggedRoster) {
-          console.log('Student Roster fields:', Object.keys(r.fields).join(', '));
-          console.log('Student Roster first record values:', Object.entries(r.fields).slice(0, 8).map(([k,v]) => `"${k}": ${JSON.stringify(v).slice(0,60)}`).join(', '));
-          loggedRoster = true;
-        }
         const name = extractRosterName(r.fields);
         if (name) rosterById.set(r.id, name);
       }
@@ -548,10 +571,6 @@ async function fetchStudentPhotos() {
       const name = rosterName || fallbackName;
       if (!name) continue;
 
-      if (byFullName.size < 5) {
-        console.log(`  [debug] linkedId=${linkedId}, rosterName="${rosterName}", fallbackName="${fallbackName}", using="${name}"`);
-      }
-
       const entry = { name, url: photoUrl };
       byFullName.set(normalizeName(name), entry);
       for (const word of name.toLowerCase().split(/\s+/)) {
@@ -566,7 +585,6 @@ async function fetchStudentPhotos() {
   } while (offset);
 
   console.log(`Airtable: ${byFullName.size} student photo(s) fetched.`);
-  console.log(`  byLastName keys (first 10):`, Array.from(byLastName.keys()).slice(0, 10).join(', '));
   return { byFullName, byLastName };
 }
 
@@ -693,6 +711,12 @@ async function main() {
     writeStudentsToSheet(auth, spreadsheetId, entries, photos),
     writeStudentsTab(auth, spreadsheetId, photos),
   ]);
+
+  await writeRepoJson('data/sync-status-student.json',
+    { role: 'student', updated_at: new Date().toISOString(), rows: n },
+    'chore: update student sync status'
+  ).catch(err => console.warn('Sync status write failed:', err.message));
+
   console.log(`\nDone. ${n} student shift rows written to roster.`);
 }
 

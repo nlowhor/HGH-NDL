@@ -18,9 +18,9 @@ async function getFileSha(apiBase, path, token) {
   return (await res.json()).sha;
 }
 
-async function putFile(apiBase, path, buffer, sha, token) {
+async function putFile(apiBase, path, buffer, sha, token, message) {
   const body = {
-    message: `chore: update headshot ${path}`,
+    message: message || `chore: update headshot ${path}`,
     content: buffer.toString('base64'),
     branch: process.env.GITHUB_REF_NAME,
     ...(sha ? { sha } : {}),
@@ -67,4 +67,21 @@ function isAirtableUrl(url) {
   return /airtable\.com|airtableusercontent\.com/i.test(String(url));
 }
 
-module.exports = { ensurePhotoInPages, isAirtableUrl };
+// Commit a small JSON status file to the repo (e.g. data/sync-status-student.json)
+// so the site can show when each sync last ran without depending on Google.
+// No-op (with a warning) when GITHUB_TOKEN isn't configured, e.g. local runs.
+async function writeRepoJson(path, obj, message) {
+  const token = process.env.GITHUB_TOKEN;
+  const repo  = process.env.GITHUB_REPOSITORY;
+  if (!token || !repo) {
+    console.warn(`Skipping ${path} write (GITHUB_TOKEN/GITHUB_REPOSITORY not set).`);
+    return;
+  }
+  const apiBase = `https://api.github.com/repos/${repo}`;
+  const buffer  = Buffer.from(JSON.stringify(obj, null, 2) + '\n');
+  const sha     = await getFileSha(apiBase, path, token);
+  await putFile(apiBase, path, buffer, sha, token, message || `chore: update ${path}`);
+  console.log(`Wrote ${path}.`);
+}
+
+module.exports = { ensurePhotoInPages, isAirtableUrl, writeRepoJson };

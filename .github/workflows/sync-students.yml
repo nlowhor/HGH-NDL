@@ -2,7 +2,7 @@ name: Sync Student Schedule
 
 on:
   schedule:
-    - cron: '0 14 * * *'  # Daily at 6 AM Pacific (14:00 UTC)
+    - cron: '30 14 * * *'  # Daily at 6:30 AM Pacific — staggered so the three syncs never rewrite the roster tab at the same time
   workflow_dispatch:        # Allow manual trigger from Actions tab
 
 permissions:

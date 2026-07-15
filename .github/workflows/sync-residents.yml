@@ -1,12 +1,12 @@
-name: Sync Residents from Medrez (DEV)
+name: Sync Residents from Medrez
 
-# Dev sync — runs against the dev Google Sheet and commits to the dev branch.
-# Triggered manually only; scheduled syncs run from the live branch.
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '15 14 * * *'  # Daily at 6:15 AM Pacific — staggered after the other syncs
+  workflow_dispatch:         # Allow manual trigger from Actions tab
 
 permissions:
-  contents: write
+  contents: write  # Required to commit sync status (and headshots) via GitHub API.
 
 jobs:
   sync:
@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: live
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -33,21 +33,20 @@ jobs:
       - name: Run resident sync
         working-directory: scripts/sync-residents
         env:
-          CANONICAL_SHEET_ID:          ${{ secrets.DEV_CANONICAL_SHEET_ID }}
+          CANONICAL_SHEET_ID:          ${{ secrets.CANONICAL_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           AIRTABLE_API_KEY:            ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_RESIDENTS_BASE_ID:  ${{ secrets.AIRTABLE_RESIDENTS_BASE_ID }}
           GITHUB_TOKEN:                ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY:           ${{ github.repository }}
-          GITHUB_REF_NAME:             dev
-          FORCE_PHOTO_REFRESH:         ''
+          GITHUB_REF_NAME:             live
         run: node index.js
 
       - name: Upload debug screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: medrez-debug-dev
+          name: medrez-debug
           path: scripts/sync-residents/medrez-debug.png
           if-no-files-found: ignore
           retention-days: 7

@@ -14,7 +14,7 @@
  *   CANONICAL_SHEET_ID=... GOOGLE_SERVICE_ACCOUNT_JSON='...' node index.js
  */
 
-const { ensurePhotoInPages } = require('../lib/github-photos');
+const { ensurePhotoInPages, writeRepoJson } = require('../lib/github-photos');
 const puppeteer  = require('puppeteer');
 const { google } = require('googleapis');
 const fs         = require('fs');
@@ -1116,6 +1116,12 @@ async function main() {
     displayByLast: photos.displayByLast || {}, savedPhotos: {},
   });
   await writeSyncTimestamp(sheets, spreadsheetId, ATTENDING_ROLE);
+
+  await writeRepoJson('data/sync-status-attending.json',
+    { role: 'attending', updated_at: new Date().toISOString(), rows: n },
+    'chore: update attending sync status'
+  ).catch(err => console.warn('Sync status write failed:', err.message));
+
   console.log(`\nDone. ${n} attending shift rows written to sheet.`);
 }
 
