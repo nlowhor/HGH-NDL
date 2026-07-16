@@ -144,6 +144,12 @@ function buildEntries(staffsData, schedData) {
   }
   console.log(`Staff mapped: ${Object.keys(staffMap).length}`);
 
+  // TEMP DEBUG: dump today's raw shift objects to diagnose duplicate rows.
+  const todayIso = isoDate(new Date());
+  for (const shift of (schedData.sched || {})[todayIso] || []) {
+    console.log(`[debug ${todayIso}]`, JSON.stringify(shift).slice(0, 400));
+  }
+
   const entries = [];
   for (const [date, shifts] of Object.entries(schedData.sched || {})) {
     for (const shift of shifts) {
