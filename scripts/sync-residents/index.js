@@ -144,10 +144,27 @@ function buildEntries(staffsData, schedData) {
   }
   console.log(`Staff mapped: ${Object.keys(staffMap).length}`);
 
-  // TEMP DEBUG: dump today's raw shift objects to diagnose duplicate rows.
+  // TEMP DEBUG: characterize each Medrez series so we can tell which schedule
+  // is current vs. the stale academic-year overlap causing duplicate residents.
+  const seriesInfo = {};
+  for (const [date, shifts] of Object.entries(schedData.sched || {})) {
+    for (const shift of shifts) {
+      const sid = shift.series_id || '?';
+      const info = seriesInfo[sid] || (seriesInfo[sid] = { min: date, max: date, count: 0, shifts: new Set() });
+      if (date < info.min) info.min = date;
+      if (date > info.max) info.max = date;
+      info.count++;
+      if (shift.name?.str) info.shifts.add(shift.name.str);
+    }
+  }
+  for (const [sid, info] of Object.entries(seriesInfo)) {
+    console.log(`[series ${sid}] dates ${info.min}→${info.max}, ${info.count} shift-cells, slots: ${[...info.shifts].join(' | ')}`);
+  }
   const todayIso = isoDate(new Date());
+  console.log(`[collisions ${todayIso}]`);
   for (const shift of (schedData.sched || {})[todayIso] || []) {
-    console.log(`[debug ${todayIso}]`, JSON.stringify(shift).slice(0, 400));
+    const names = (shift.staffs || []).map(id => staffMap[id]?.name || `#${id}`).join(', ');
+    console.log(`  series=${shift.series_id} slot="${shift.name?.str}" staff=[${names}]`);
   }
 
   const entries = [];
