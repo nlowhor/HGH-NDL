@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - live
+  # The sync workflows commit data/sync-status-*.json using secrets.GITHUB_TOKEN.
+  # GitHub deliberately does not start new workflow runs from events created with
+  # GITHUB_TOKEN, so those commits never trigger a deploy — without this schedule
+  # the live site only refreshes when a human pushes, and the footer's freshness
+  # timestamps go stale even while the syncs are succeeding.
+  schedule:
+    - cron: '0 15 * * *'  # Daily at 8:00 AM Pacific, after the three morning syncs
   workflow_dispatch:
 
 permissions:
