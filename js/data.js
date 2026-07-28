@@ -9,10 +9,17 @@ import { fetchDocRoster } from "./sources/doc.js";
 import { fetchWebsiteRoster } from "./sources/web.js";
 
 const OFFSITE_RE = /\b(san\s+leandro|slh|alh|alameda|cho|ah)\b/i;
+// Deliberately does NOT consider r.name. Surnames like Cho, Ah or Alh would
+// otherwise match and silently hide a real person; a location belongs in the
+// shift label, not in someone's name.
 function isOffsite(r) {
-  const text = [r.name, r.title, r.notes].filter(Boolean).join(" ");
+  const text = [r.title, r.notes].filter(Boolean).join(" ");
   return OFFSITE_RE.test(text);
 }
+
+// Exported so the render pass in app.js reuses this exact rule rather than
+// keeping a second, drifting copy of the off-site keyword list.
+export function isOffsiteRow(r) { return isOffsite(r); }
 function isBackupRow(r) {
   return /backup/i.test(r.notes || "");
 }
@@ -79,7 +86,10 @@ async function fetchPersonSheet(url) {
 function dedupe(rows) {
   const seen = new Map();
   for (const r of rows) {
-    const key = `${r.date}|${r.shift}|${r.role}|${r.name.toLowerCase()}`;
+    // The shift label is part of the key: one person can hold two assignments
+    // inside the same shift bucket (e.g. Day A + Backup, both "day"), and
+    // collapsing them loses one of the two.
+    const key = `${r.date}|${r.shift}|${r.role}|${r.name.toLowerCase()}|${(r.notes || "").toLowerCase()}`;
     if (!seen.has(key)) seen.set(key, r);
     else {
       // Merge: fill missing photo/title/notes from later rows.
