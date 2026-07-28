@@ -2,7 +2,7 @@
 // for the selected time, update clock, and handle user interactions.
 
 import { config } from "./config.js";
-import { loadAllRosters, loadSyncLog, rosterForShift, groupByRole } from "./data.js";
+import { loadAllRosters, loadSyncLog, rosterForShift, groupByRole, isOffsiteRow } from "./data.js";
 import { shiftAt, nextShiftAfter, prevShiftBefore, describeShift, shiftStartDate } from "./shifts.js";
 
 function hasLiveSource() {
@@ -411,16 +411,16 @@ function shiftRelativeLabel(viewed, nowShift) {
   return { text: viewStart > nowStart ? "Future Shift" : "Past Shift", mode: "other" };
 }
 
-// Off-site and backup filtering is applied in data.js at load time.
-// This pass is a secondary safety net covering any rows that slipped through
-// (e.g. loaded from a source that bypasses loadAllRosters filtering).
-const OFFSITE_KEYWORDS = ['san leandro', 'slh', 'alameda', 'cho'];
-
+// Off-site and backup filtering is applied in data.js at load time. This pass
+// is a secondary safety net covering any rows that slipped through (e.g. loaded
+// from a source that bypasses loadAllRosters filtering).
+//
+// This used to keep its own keyword list, which had already drifted out of sync
+// with data.js (missing alh and ah) and matched on substrings of the person's
+// name - so "cho" would hide anyone whose name merely contained those letters.
+// Reuse the one rule instead.
 function filterOffsite(rows) {
-  return rows.filter(r => {
-    const text = [r.name, r.title, r.notes].filter(Boolean).join(' ').toLowerCase();
-    return !OFFSITE_KEYWORDS.some(kw => text.includes(kw));
-  });
+  return rows.filter(r => !isOffsiteRow(r));
 }
 
 function currentWhen() {
