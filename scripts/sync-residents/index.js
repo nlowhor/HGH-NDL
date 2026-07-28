@@ -8,8 +8,12 @@
  *   - getschedule: all shifts with dates, times, names, and assigned staff IDs
  *
  * Writes resident shift rows to the roster tab of the canonical Google Sheet.
- * Person data (photo_url, display name, title) lives in the "residents" tab
- * and is managed manually — this script never touches that tab.
+ * Person data (photo_url, display name) lives in the "residents" tab and is
+ * managed manually — this script never touches that tab.
+ *
+ * PGY level is authoritative from Medrez. The "title" column in the residents
+ * tab is an OPTIONAL manual override: leave it blank to use the Medrez value,
+ * or type a value to pin someone's label permanently (see js/data.js).
  *
  * Runs in GitHub Actions on a daily schedule. Can also be run locally:
  *   CANONICAL_SHEET_ID=... GOOGLE_SERVICE_ACCOUNT_JSON='...' node index.js
@@ -34,12 +38,17 @@ function isoDate(d) {
   return d.toISOString().slice(0, 10);
 }
 
-// Medrez keys PGY levels by the ending calendar year of the academic year
-// (e.g. the 2025-2026 year uses key "2026").
+// Medrez keys PGY levels by the STARTING calendar year of the academic year:
+// the 2026-2027 year uses key "2026". Residents move up on the program's
+// changeover day in late July, not on July 1, so the cutover date is explicit
+// here — update it each year if the program's start date moves.
+const PROGRAM_YEAR_START = '07-27'; // MM-DD of the first day of the new academic year
+
 function medrezYear() {
-  const now   = new Date();
-  const month = now.getMonth() + 1; // 1-12
-  return month >= 7 ? now.getFullYear() + 1 : now.getFullYear();
+  const now = new Date();
+  const monthDay =
+    `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  return monthDay >= PROGRAM_YEAR_START ? now.getFullYear() : now.getFullYear() - 1;
 }
 
 function detectShift(startHour) {
@@ -134,6 +143,15 @@ async function fetchMedrezData() {
 
 function buildEntries(staffsData, schedData) {
   const year = medrezYear();
+  console.log(`Using Medrez academic-year key: ${year}`);
+
+  // Sanity check: print the year keys Medrez actually publishes for the first
+  // resident, so a future off-by-one is obvious in the log rather than showing
+  // up as an impossible "R5" on the board.
+  const sampleStaff = Object.values(staffsData.staffs || {})[0];
+  if (sampleStaff?.level?.years) {
+    console.log(`Sample level.years: ${JSON.stringify(sampleStaff.level.years)}`);
+  }
 
   const staffMap = {};
   for (const [id, s] of Object.entries(staffsData.staffs || {})) {
@@ -143,29 +161,6 @@ function buildEntries(staffsData, schedData) {
     staffMap[id] = { name, title: pgyLabel(pgyRaw) };
   }
   console.log(`Staff mapped: ${Object.keys(staffMap).length}`);
-
-  // TEMP DEBUG: characterize each Medrez series so we can tell which schedule
-  // is current vs. the stale academic-year overlap causing duplicate residents.
-  const seriesInfo = {};
-  for (const [date, shifts] of Object.entries(schedData.sched || {})) {
-    for (const shift of shifts) {
-      const sid = shift.series_id || '?';
-      const info = seriesInfo[sid] || (seriesInfo[sid] = { min: date, max: date, count: 0, shifts: new Set() });
-      if (date < info.min) info.min = date;
-      if (date > info.max) info.max = date;
-      info.count++;
-      if (shift.name?.str) info.shifts.add(shift.name.str);
-    }
-  }
-  for (const [sid, info] of Object.entries(seriesInfo)) {
-    console.log(`[series ${sid}] dates ${info.min}→${info.max}, ${info.count} shift-cells, slots: ${[...info.shifts].join(' | ')}`);
-  }
-  const todayIso = isoDate(new Date());
-  console.log(`[collisions ${todayIso}]`);
-  for (const shift of (schedData.sched || {})[todayIso] || []) {
-    const names = (shift.staffs || []).map(id => staffMap[id]?.name || `#${id}`).join(', ');
-    console.log(`  series=${shift.series_id} slot="${shift.name?.str}" staff=[${names}]`);
-  }
 
   const entries = [];
   for (const [date, shifts] of Object.entries(schedData.sched || {})) {
