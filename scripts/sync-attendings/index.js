@@ -179,7 +179,7 @@ function parseQGendaApiJson(json, fromDate, toDate) {
 
     if (date && name && date >= fromDate && date <= toDate) {
       const shift = time ? shiftFromTime(String(time)) : shiftFromLabel(String(label || ''));
-      const key   = `${date}|${shift}|${name.toLowerCase()}`;
+      const key   = `${date}|${shift}|${name.toLowerCase()}|${String(label || '').toLowerCase()}`;
       if (!seen.has(key)) {
         seen.add(key);
         entries.push({ date, shift, name, shiftLabel: String(label || '') });
@@ -227,6 +227,7 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
 
   // Parse GetQuickLinkScheduleDisplay items using the lookup maps.
   const seenScheduleUrls = new Set();
+  const unresolvedStaff  = new Set(); // staff keys with no name in LinkInitialData
   for (const { url, json } of apiResponses) {
     if (!url.includes('ScheduleView')) continue;
     if (seenScheduleUrls.has(url)) continue; // all months return identical data; parse once
@@ -243,14 +244,16 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
       if (rawDate < fromDate || rawDate > toDate) continue;
 
       const name  = staffMap[sKey] || null;
-      if (!name) continue; // skip if we can't resolve the name
+      if (!name) { unresolvedStaff.add(sKey); continue; } // unknown staff key - reported below
       const label = taskMap[tKey] || '';
       const rawTime = item.startTime || item.StartTime || '';
       // startTime is like "2026-05-06T11:00:00" — extract just the time portion
       const timeStr = rawTime.includes('T') ? rawTime.split('T')[1] : rawTime;
       const shift = timeStr ? shiftFromTime(timeStr) : shiftFromLabel(label);
 
-      const key = `${rawDate}|${shift}|${name.toLowerCase()}`;
+      // Label is part of the key: one attending can hold two assignments that
+      // fall in the same shift bucket (e.g. Day A + Backup, both "day").
+      const key = `${rawDate}|${shift}|${name.toLowerCase()}|${label.toLowerCase()}`;
       if (!seen.has(key)) {
         seen.add(key);
         entries.push({ date: rawDate, shift, name, shiftLabel: label });
@@ -263,10 +266,14 @@ function parseQGendaApiResponses(apiResponses, fromDate, toDate) {
     for (const { url, json } of apiResponses) {
       const found = parseQGendaApiJson(json, fromDate, toDate);
       for (const e of found) {
-        const key = `${e.date}|${e.shift}|${e.name.toLowerCase()}`;
+        const key = `${e.date}|${e.shift}|${e.name.toLowerCase()}|${(e.shiftLabel || '').toLowerCase()}`;
         if (!seen.has(key)) { seen.add(key); entries.push(e); }
       }
     }
+  }
+
+  if (unresolvedStaff.size) {
+    console.warn(`WARNING: ${unresolvedStaff.size} schedule entr(ies) skipped - staff key not in LinkInitialData: ${[...unresolvedStaff].slice(0, 10).join(', ')}`);
   }
 
   entries.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
@@ -323,7 +330,7 @@ function parseQGendaTables(tables, fromDate, toDate) {
           if (NAME_RE.test(line)) {
             const shift = cellTime ? shiftFromTime(cellTime)
                         : cellLabel ? shiftFromLabel(cellLabel) : 'day';
-            const key = `${date}|${shift}|${line.toLowerCase()}`;
+            const key = `${date}|${shift}|${line.toLowerCase()}|${cellLabel.toLowerCase()}`;
             if (!seen.has(key)) {
               seen.add(key);
               entries.push({ date, shift, name: line, shiftLabel: cellLabel });
@@ -365,7 +372,7 @@ function parseQGendaText(text, fromDate, toDate) {
   function addEntry(name) {
     const shift = currentTime  ? shiftFromTime(currentTime)
                 : currentLabel ? shiftFromLabel(currentLabel) : 'day';
-    const key = `${currentDate}|${shift}|${name.toLowerCase()}`;
+    const key = `${currentDate}|${shift}|${name.toLowerCase()}|${currentLabel.toLowerCase()}`;
     if (!seen.has(key)) {
       seen.add(key);
       entries.push({ date: currentDate, shift, name, shiftLabel: currentLabel });
@@ -945,8 +952,18 @@ async function writeAttendingsToSheet(sheets, spreadsheetId, entries, photos) {
   const { byFull, byLast, displayByLast, savedPhotos } = photos;
 
   // Filter out off-site shifts before touching the sheet.
-  const offsiteCount = entries.filter(e => OFFSITE_RE.test(e.shiftLabel || '')).length;
-  if (offsiteCount) console.log(`Filtered out ${offsiteCount} off-site entry(s) (San Leandro/Alameda/CHO).`);
+  const offsite = entries.filter(e => OFFSITE_RE.test(e.shiftLabel || ''));
+  if (offsite.length) {
+    const byLabel = {};
+    for (const e of offsite) {
+      const l = e.shiftLabel || '(no label)';
+      byLabel[l] = (byLabel[l] || 0) + 1;
+    }
+    console.log(`Filtered out ${offsite.length} off-site entry(s), by shift label:`);
+    for (const [l, n] of Object.entries(byLabel).sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${n} x ${l}`);
+    }
+  }
   entries = entries.filter(e => !OFFSITE_RE.test(e.shiftLabel || ''));
 
   const headerRes = await sheets.spreadsheets.values.get({
